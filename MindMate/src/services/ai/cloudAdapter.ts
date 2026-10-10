@@ -1,4 +1,6 @@
 import { IAITutorAdapter, SendMessageOptions, AIStreamCallbacks, AIResponse } from './types';
+import { RESPONSE_FORMATTING_GUIDELINES } from './responseFormatting';
+import { contentModerationService } from '../safety/contentModerationService';
 
 export class CloudAIAdapter implements IAITutorAdapter {
   private apiBaseUrl: string;
@@ -53,14 +55,52 @@ export class CloudAIAdapter implements IAITutorAdapter {
 
     const { messages, systemPrompt, learnerProfile, temperature, maxTokens, signal } = options;
 
-    // Construct enriched system prompt with learner context
+    // Construct enriched system prompt with learner context and subject preservation rules
     let enrichedSystemPrompt = systemPrompt || 'You are MindMate, an adaptive educational AI tutor.';
+    enrichedSystemPrompt += `\n\nCore Subject & Context Rules:
+1. Directly and factually answer the user's active subject of inquiry. Never force programming or code into questions that are not about computer science or code.
+2. For biographical, historical, or real-person inquiries, provide neutral, objective, and factual information without graphic details or unsolicited code metaphors.
+3. When answering follow-up requests (such as "Explain differently", "Simplify", "Give example", "Quiz me", or "Show visually"), strictly preserve the subject of the immediately preceding question and answer. Never switch subjects or revert to previous syllabus topics on follow-up requests.
+4. If the required context to answer or re-explain is missing or ambiguous, ask the user to clarify instead of inventing context.
+5. Content safety & educational focus: MindMate is strictly an educational learning platform. Decline requests for adult entertainment, pornography, sexually explicit content, or explicit performers politely and redirect to academic subjects.
+6. Scientific biology & health exception: Legitimate questions about human reproduction, anatomy, puberty, STI prevention, and relationship consent must be answered factually, clinically, and age-appropriately without explicit depictions.`;
+    enrichedSystemPrompt += `\n\n${RESPONSE_FORMATTING_GUIDELINES}`;
+
+    // Defense-in-depth pre-flight moderation
+    const userMessages = messages.filter((m) => m.role === 'user');
+    const lastUserMsg = userMessages[userMessages.length - 1];
+    const prevUserMsg = userMessages.length > 1 ? userMessages[userMessages.length - 2] : undefined;
+    const prevAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant');
+
+    const modResult = contentModerationService.evaluate(
+      lastUserMsg?.promptContent || lastUserMsg?.content || '',
+      {
+        previousQuestion: prevUserMsg?.content,
+        previousAnswer: prevAssistantMsg?.content
+      }
+    );
+
+    if (modResult.decision !== 'ALLOW') {
+      callbacks.onChunk?.(modResult.userExplanation);
+      const refusalResponse: AIResponse = {
+        content: modResult.userExplanation,
+        source: 'cloud',
+        model: 'content-safety-guard',
+        elapsedMs: Date.now() - startTime
+      };
+      callbacks.onComplete?.(refusalResponse);
+      return refusalResponse;
+    }
+
     if (learnerProfile) {
-      enrichedSystemPrompt += `\n\nLearner Context:\n- Name: ${learnerProfile.name || 'Alex'}\n- Learning Preference: ${learnerProfile.learningStyle || 'Examples first'}\n- Current Level: ${learnerProfile.level || 'Intermediate'}\n- Goal: ${learnerProfile.goal || 'Mastery'}\nPlease adapt your explanations accordingly.`;
+      enrichedSystemPrompt += `\n\nLearner Context (for pedagogical style and depth, not subject matter):\n- Name: ${learnerProfile.name || 'Alex'}\n- Learning Preference: ${learnerProfile.learningStyle || 'Examples first'}\n- Current Level: ${learnerProfile.level || 'Intermediate'}\n- Goal: ${learnerProfile.goal || 'Mastery'}\nPlease adapt your explanations accordingly, but never override the subject of the user's inquiry.`;
     }
 
     const payload = {
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.promptContent || m.content
+      })),
       systemPrompt: enrichedSystemPrompt,
       temperature,
       maxTokens,

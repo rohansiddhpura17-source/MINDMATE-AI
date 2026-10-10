@@ -13,6 +13,7 @@ export interface AIMessage {
   id?: number | string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  promptContent?: string;
   code?: string;
   explanation?: string;
   source?: ExecutionSource;

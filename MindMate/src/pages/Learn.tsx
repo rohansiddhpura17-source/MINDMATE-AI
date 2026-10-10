@@ -18,8 +18,11 @@ import {
   CheckCircle,
   Square,
   Cpu,
-  Download
+  Download,
+  ChevronDown,
+  SlidersHorizontal
 } from 'lucide-react';
+import { MarkdownMessage, CodeBlock } from '../components/markdown/MarkdownMessage';
 import { chatMessages as initialMessages, learner } from '../data/mockData';
 import { ChatMessage } from '../types';
 import { cn } from '../utils';
@@ -29,8 +32,13 @@ import {
   AIEngineStatus,
   DEFAULT_LOCAL_MODEL,
   SUPPORTED_LOCAL_MODELS,
-  GenerationPhase
+  GenerationPhase,
+  buildFollowUpContext,
+  isFollowUpAction
 } from '../services/ai';
+import { VisualRenderer } from '../components/visual/VisualRenderer';
+import { generateVisualRepresentation, VisualPayload } from '../services/visual';
+import { findPrecedingTurn, normalizeAction } from '../services/ai/followUpContext';
 
 const CHIPS = ['Explain differently', 'Simplify', 'Give example', 'Quiz me', 'Show visually'];
 
@@ -60,20 +68,66 @@ export default function Learn() {
   const [currentTopic, setCurrentTopic] = useState('Python Functions');
   const [quizQuestionCount, setQuizQuestionCount] = useState(0);
 
+  // Collapsible panels state
+  const [isAiModeExpanded, setIsAiModeExpanded] = useState(true);
+  const [isLocalAiExpanded, setIsLocalAiExpanded] = useState(true);
+  const [isLearningContextExpanded, setIsLearningContextExpanded] = useState(true);
+  // Main Mate AI chat panel (conversation, quick actions, composer)
+  const [isChatExpanded, setIsChatExpanded] = useState(true);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const timerRef = useRef<any>(null);
   const currentPendingQuestionRef = useRef<{ text: string; options?: any } | null>(null);
   const activeAssistantIdRef = useRef<number | null>(null);
   const currentRequestSeqRef = useRef<number>(0);
+  // Scroll snapshot taken when the chat collapses, so expanding restores the reading position
+  const collapsedScrollRef = useRef<{ scrollTop: number; signature: string } | null>(null);
+
+  const messagesSignature = `${messages.length}:${messages[messages.length - 1]?.content.length ?? 0}`;
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const feed = feedRef.current;
+    if (feed && typeof feed.scrollTo === 'function') {
+      // Scroll only the chat feed, never the whole page
+      feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
+    } else if (feed) {
+      feed.scrollTop = feed.scrollHeight;
+    }
   };
 
   useEffect(() => {
+    if (!isChatExpanded) return; // Don't auto-scroll a hidden feed
     scrollToBottom();
   }, [messages, isGenerating]);
+
+  const toggleChatExpanded = () => {
+    if (isChatExpanded && feedRef.current) {
+      collapsedScrollRef.current = {
+        scrollTop: feedRef.current.scrollTop,
+        signature: messagesSignature
+      };
+    }
+    setIsChatExpanded(!isChatExpanded);
+  };
+
+  // Restore the reading position (or jump to new content) when the chat is expanded again
+  useEffect(() => {
+    if (!isChatExpanded) return;
+    const snapshot = collapsedScrollRef.current;
+    if (!snapshot) return;
+    collapsedScrollRef.current = null;
+    requestAnimationFrame(() => {
+      const feed = feedRef.current;
+      if (!feed) return;
+      if (snapshot.signature !== messagesSignature) {
+        feed.scrollTop = feed.scrollHeight; // New tokens arrived while collapsed
+      } else {
+        feed.scrollTop = snapshot.scrollTop;
+      }
+    });
+  }, [isChatExpanded]);
 
   // Subscribe to AI status updates
   useEffect(() => {
@@ -144,7 +198,7 @@ export default function Learn() {
   const executeAIGeneration = async (
     userText: string,
     targetAssistantId: number,
-    options?: { startQuiz?: boolean }
+    options?: { startQuiz?: boolean; promptContent?: string; displayText?: string; visualPayload?: VisualPayload }
   ) => {
     const seq = ++currentRequestSeqRef.current;
     setIsGenerating(true);
@@ -171,8 +225,12 @@ export default function Learn() {
       await aiTutorService.sendMessageStream(
         {
           messages: [
-            ...historyForAI.map((m) => ({ role: m.role, content: m.content })),
-            { role: 'user', content: userText }
+            ...historyForAI.map((m) => ({
+              role: m.role,
+              content: m.promptContent || m.content,
+              promptContent: m.promptContent
+            })),
+            { role: 'user', content: userText, promptContent: userText }
           ],
           learnerProfile: {
             name: learner.name,
@@ -209,7 +267,8 @@ export default function Learn() {
                         explanation: res.explanation,
                         source: res.source,
                         model: res.model,
-                        elapsedMs: res.elapsedMs
+                        elapsedMs: res.elapsedMs,
+                        visual: msg.visual || options?.visualPayload
                       }
                     : msg
                 )
@@ -255,7 +314,7 @@ export default function Learn() {
     if (isGenerating && currentPendingQuestionRef.current && activeAssistantIdRef.current) {
       // Seamlessly cancel active in-flight request and re-route the SAME question through new mode
       setCurrentPhase('switching');
-      setPhaseDetail(`Switching AI mode to ${newMode.toUpperCase()}...`);
+      setPhaseDetail(`Switching Mate AI mode to ${newMode.toUpperCase()}...`);
 
       // Immediately abort existing generation
       aiTutorService.abort();
@@ -307,16 +366,21 @@ export default function Learn() {
     } else {
       const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
       if (lastUserMsg) {
-        handleSend(lastUserMsg.content);
+        handleSend(lastUserMsg.content, {
+          promptContent: lastUserMsg.promptContent
+        });
       }
     }
   };
 
-  const handleSend = async (text: string, options?: { startQuiz?: boolean }) => {
+  const handleSend = async (
+    text: string,
+    options?: { startQuiz?: boolean; promptContent?: string; displayText?: string; isVisual?: boolean }
+  ) => {
     if (!text.trim() || isGenerating) return;
 
     setErrorMessage(null);
-    const userMessageContent = text.trim();
+    const userMessageContent = (options?.displayText || text).trim();
     setInputValue('');
 
     if (options?.startQuiz) {
@@ -326,10 +390,28 @@ export default function Learn() {
       setQuizQuestionCount((c) => c + 1);
     }
 
+    const actionType = normalizeAction(userMessageContent);
+    const isVisualRequest =
+      options?.isVisual ||
+      actionType === 'Show visually' ||
+      userMessageContent.toLowerCase().startsWith('show visually') ||
+      userMessageContent.toLowerCase().startsWith('visualize');
+
+    // Determine prompt to send to AI: use options.promptContent if provided,
+    // or if the typed text is a follow-up action ("explain differently", "simplify", etc.),
+    // construct the grounded prompt using buildFollowUpContext
+    let promptToSend = options?.promptContent;
+    if (!promptToSend && isFollowUpAction(userMessageContent)) {
+      const followUp = buildFollowUpContext(messages, userMessageContent);
+      promptToSend = followUp.promptContent;
+    }
+    const effectivePrompt = promptToSend || userMessageContent;
+
     const newUserMsg: ChatMessage = {
       id: Date.now(),
       role: 'user',
       content: userMessageContent,
+      promptContent: effectivePrompt !== userMessageContent ? effectivePrompt : undefined,
       timestamp: Date.now()
     };
 
@@ -343,15 +425,50 @@ export default function Learn() {
     };
 
     setMessages((prev) => [...prev, newUserMsg, initialAssistantMsg]);
-    executeAIGeneration(userMessageContent, tempAssistantId, options);
+
+    // If this is a visual request, trigger Visual Learning Engine in parallel
+    if (isVisualRequest) {
+      const precedingTurn = findPrecedingTurn(messages);
+      const qForVisual = precedingTurn?.question || userMessageContent;
+      const aForVisual = precedingTurn?.answer || '';
+      const sForVisual = precedingTurn?.subject || currentTopic || 'Topic';
+
+      generateVisualRepresentation({
+        question: qForVisual,
+        answer: aForVisual,
+        subject: sForVisual,
+        mode: activeMode,
+        isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
+        previousQuestion: precedingTurn?.question,
+        previousAnswer: precedingTurn?.answer
+      })
+        .then((visualPayload) => {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === tempAssistantId ? { ...msg, visual: visualPayload } : msg
+            )
+          );
+        })
+        .catch((err) => {
+          console.warn('[VisualEngine] Generation failed:', err);
+        });
+    }
+
+    executeAIGeneration(effectivePrompt, tempAssistantId, {
+      ...options,
+      promptContent: effectivePrompt,
+      displayText: userMessageContent
+    });
   };
 
   const handleChipClick = (chip: string) => {
-    if (chip === 'Quiz me') {
-      handleSend(`Start a short interactive quiz on ${currentTopic}.`, { startQuiz: true });
-    } else {
-      handleSend(chip);
-    }
+    const followUp = buildFollowUpContext(messages, chip);
+    handleSend(followUp.displayContent, {
+      promptContent: followUp.promptContent,
+      displayText: followUp.displayContent,
+      startQuiz: chip === 'Quiz me',
+      isVisual: chip === 'Show visually'
+    });
   };
 
   const activeMode = aiStatus?.mode || 'auto';
@@ -362,98 +479,237 @@ export default function Learn() {
 
   return (
     <AppShell pageTitle="Learn" pageSubtitle="Chat with your adaptive AI tutor (Online + Offline)">
-      <div className="flex flex-col lg:flex-row gap-6 h-[calc(100vh-160px)]">
+      <div
+        className={cn(
+          'flex flex-col lg:flex-row gap-6 h-auto lg:h-[calc(100vh-160px)]',
+          isChatExpanded && 'min-h-[600px]'
+        )}
+      >
         
-        {/* Left side: Chat & Mode Bar */}
-        <div className="flex-1 flex flex-col bg-surface rounded-card border border-border shadow-sm overflow-hidden h-full">
+        {/* Left side: Mate AI chat panel (collapsible) */}
+        <section
+          aria-label="Mate AI chat"
+          data-testid="mate-ai-chat-panel"
+          data-chat-expanded={isChatExpanded ? 'true' : 'false'}
+          className={cn(
+            'flex-1 flex flex-col bg-surface rounded-card border border-border shadow-sm min-w-0 mate-chat-shell overflow-hidden',
+            isChatExpanded ? 'h-[600px] lg:h-full' : 'h-auto lg:self-start'
+          )}
+        >
           
-          {/* Mode Selector Header Bar */}
-          <div className="px-6 py-3 border-b border-border bg-gray-50/70 flex flex-wrap items-center justify-between gap-3 text-sm">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted mr-1">
-                AI Mode:
-              </span>
-              <div className="inline-flex rounded-lg border border-border bg-white p-0.5 shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => handleModeChange('online')}
+          {/* Mate AI Header Bar */}
+          <div
+            className={cn(
+              'bg-gray-50/70 text-sm transition-colors',
+              isChatExpanded && 'border-b border-border'
+            )}
+          >
+            {/* Header Row — clicking anywhere on the row toggles the chat; buttons provide keyboard access */}
+            <div
+              onClick={toggleChatExpanded}
+              className="w-full px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 cursor-pointer select-none hover:bg-gray-100/60 transition-colors"
+              data-testid="mate-ai-header"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-dark/70">
+                  <Sparkles className="h-3.5 w-3.5 text-primary" />
+                  <span>Mate AI</span>
+                </h2>
+                
+                <span
+                  data-testid="mate-ai-mode-badge"
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
-                    activeMode === 'online'
-                      ? 'bg-indigo-600 text-white shadow-xs'
-                      : 'text-muted hover:text-dark hover:bg-gray-100'
+                    'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold capitalize',
+                    activeMode === 'online' && 'bg-indigo-100 text-indigo-700',
+                    activeMode === 'offline' && 'bg-emerald-100 text-emerald-700',
+                    activeMode === 'auto' && 'bg-purple-100 text-purple-700'
                   )}
                 >
-                  <Cloud className="h-3.5 w-3.5" />
-                  Online
+                  {activeMode}
+                </span>
+
+                {!isChatExpanded && isGenerating && (
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[11px] font-semibold"
+                    role="status"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                    Generating…
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 sm:gap-3 ml-auto">
+                {/* Active Provider Badge */}
+                <div className="hidden sm:flex items-center gap-2 text-xs" data-testid="mate-ai-provider-badge">
+                  {activeMode === 'online' && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 font-medium border border-indigo-100">
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-pulse" />
+                      Cloud AI ({aiStatus?.cloudModel || 'gemini-3.8-flash'})
+                    </span>
+                  )}
+
+                  {activeMode === 'offline' && (
+                    <span
+                      className={cn(
+                        'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-medium border',
+                        isLocalReady
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-amber-50 text-amber-700 border-amber-200'
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'w-1.5 h-1.5 rounded-full',
+                          isLocalReady ? 'bg-emerald-600' : 'bg-amber-500'
+                        )}
+                      />
+                      {isLocalReady ? 'Mate AI (Offline) Ready' : 'Mate AI Model Required'}
+                    </span>
+                  )}
+
+                  {activeMode === 'auto' && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 font-medium border border-purple-100">
+                      <Sparkles className="h-3.5 w-3.5 text-purple-600" />
+                      Auto Hybrid ({isLocalReady ? 'Cloud + Mate AI Ready' : 'Cloud Preferred'})
+                    </span>
+                  )}
+                </div>
+
+                {/* Mode selector drawer toggle (independent of the chat collapse) */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsAiModeExpanded(!isAiModeExpanded);
+                  }}
+                  aria-expanded={isAiModeExpanded}
+                  aria-controls="mate-ai-mode-drawer"
+                  aria-label="Toggle Mate AI settings"
+                  title={isAiModeExpanded ? 'Hide mode selector' : 'Show mode selector'}
+                  className="inline-flex items-center gap-1 h-8 rounded-lg border border-border bg-white px-2 text-xs font-medium text-muted hover:text-dark hover:border-primary/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary transition-colors"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Modes</span>
+                  <ChevronDown
+                    className={cn(
+                      'h-3.5 w-3.5 transition-transform duration-300 ease-in-out',
+                      isAiModeExpanded ? 'rotate-180' : 'rotate-0'
+                    )}
+                  />
                 </button>
 
+                {/* Main chat expand/collapse control */}
                 <button
                   type="button"
-                  onClick={() => handleModeChange('offline')}
-                  className={cn(
-                    'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
-                    activeMode === 'offline'
-                      ? 'bg-emerald-600 text-white shadow-xs'
-                      : 'text-muted hover:text-dark hover:bg-gray-100'
-                  )}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleChatExpanded();
+                  }}
+                  aria-expanded={isChatExpanded}
+                  aria-controls="mate-ai-chat-body"
+                  aria-label={isChatExpanded ? 'Collapse Mate AI chat' : 'Expand Mate AI chat'}
+                  title={isChatExpanded ? 'Collapse Mate AI chat' : 'Expand Mate AI chat'}
+                  data-testid="mate-ai-chat-toggle"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-white text-dark/70 hover:text-primary hover:border-primary/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary transition-colors"
                 >
-                  <HardDrive className="h-3.5 w-3.5" />
-                  Offline
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleModeChange('auto')}
-                  className={cn(
-                    'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
-                    activeMode === 'auto'
-                      ? 'bg-primary text-white shadow-xs'
-                      : 'text-muted hover:text-dark hover:bg-gray-100'
-                  )}
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Auto
+                  <ChevronDown
+                    className={cn(
+                      'h-4 w-4 transition-transform duration-300 ease-in-out',
+                      isChatExpanded ? 'rotate-180' : 'rotate-0'
+                    )}
+                  />
                 </button>
               </div>
             </div>
 
-            {/* Active Status Badge */}
-            <div className="flex items-center gap-2 text-xs">
-              {activeMode === 'online' && (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 font-medium border border-indigo-100">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-pulse" />
-                  Cloud AI ({aiStatus?.cloudModel || 'gemini-3.8-flash'})
-                </span>
+            {/* Expandable Mode Controls Drawer */}
+            <div
+              id="mate-ai-mode-drawer"
+              {...(!isAiModeExpanded ? { inert: '' } : {})}
+              aria-hidden={!isAiModeExpanded}
+              className={cn(
+                'transition-all duration-300 ease-in-out overflow-hidden px-4 sm:px-6',
+                isAiModeExpanded
+                  ? 'max-h-40 opacity-100 pb-3 pt-1 border-t border-border/40'
+                  : 'max-h-0 opacity-0 pb-0 pt-0'
               )}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs pt-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted font-medium">Select Mode:</span>
+                  <div className="inline-flex rounded-lg border border-border bg-white p-0.5 shadow-sm">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleModeChange('online');
+                      }}
+                      className={cn(
+                        'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                        activeMode === 'online'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'text-muted hover:text-dark hover:bg-gray-100'
+                      )}
+                    >
+                      <Cloud className="h-3.5 w-3.5" />
+                      Online
+                    </button>
 
-              {activeMode === 'offline' && (
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-medium border',
-                    isLocalReady
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      : 'bg-amber-50 text-amber-700 border-amber-200'
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'w-1.5 h-1.5 rounded-full',
-                      isLocalReady ? 'bg-emerald-600' : 'bg-amber-500'
-                    )}
-                  />
-                  {isLocalReady ? 'Local AI Ready (WebGPU)' : 'Local Model Required'}
-                </span>
-              )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleModeChange('offline');
+                      }}
+                      className={cn(
+                        'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                        activeMode === 'offline'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'text-muted hover:text-dark hover:bg-gray-100'
+                      )}
+                    >
+                      <HardDrive className="h-3.5 w-3.5" />
+                      Offline
+                    </button>
 
-              {activeMode === 'auto' && (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 font-medium border border-purple-100">
-                  <Sparkles className="h-3.5 w-3.5 text-purple-600" />
-                  Auto Hybrid ({isLocalReady ? 'Cloud + Local Ready' : 'Cloud Preferred'})
-                </span>
-              )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleModeChange('auto');
+                      }}
+                      className={cn(
+                        'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                        activeMode === 'auto'
+                          ? 'bg-primary text-white shadow-xs'
+                          : 'text-muted hover:text-dark hover:bg-gray-100'
+                      )}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Auto
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-muted">
+                  {activeMode === 'online' && 'Online: Streams directly from Google Gemini 3.8 Flash for maximum intelligence.'}
+                  {activeMode === 'offline' && 'Offline: Uses SmolLM2 Mate AI (Offline) running locally in your browser with zero cloud connectivity.'}
+                  {activeMode === 'auto' && 'Auto: Dynamically selects cloud or local model based on connection availability.'}
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Collapsible chat body — always mounted so streaming, drafts and scroll position survive collapse */}
+          <div
+            id="mate-ai-chat-body"
+            data-testid="mate-ai-chat-body"
+            data-collapsed={isChatExpanded ? 'false' : 'true'}
+            aria-hidden={!isChatExpanded}
+            {...(!isChatExpanded ? { inert: '' } : {})}
+            className="mate-chat-body flex flex-col"
+          >
 
           {/* Model Loading Progress Banner (if initializing) */}
           {progress && progress.progress < 1.0 && (
@@ -461,7 +717,7 @@ export default function Learn() {
               <div className="flex items-center justify-between text-xs font-semibold text-indigo-900 mb-1.5">
                 <span className="flex items-center gap-1.5">
                   <Download className="h-3.5 w-3.5 text-indigo-600 animate-bounce" />
-                  {progress.text || 'Downloading and initializing local WebGPU model...'}
+                  {progress.text || 'Downloading and initializing Mate AI (Offline) model...'}
                 </span>
                 <span>{Math.round(progress.progress * 100)}%</span>
               </div>
@@ -490,7 +746,7 @@ export default function Learn() {
               <div className="flex items-center gap-2 shrink-0">
                 {activeMode === 'offline' && !isLocalReady && (
                   <Button size="sm" onClick={handleInitLocalModel} className="h-7 text-xs bg-red-600 hover:bg-red-700 text-white">
-                    Load Local Model
+                    Load Mate AI (Offline)
                   </Button>
                 )}
                 <Button variant="ghost" size="sm" onClick={() => setErrorMessage(null)} className="h-7 text-xs text-red-700">
@@ -501,7 +757,7 @@ export default function Learn() {
           )}
 
           {/* Messages Feed */}
-          <div className="flex-1 p-6 overflow-y-auto space-y-6">
+          <div ref={feedRef} className="flex-1 min-h-0 p-4 sm:p-6 overflow-y-auto space-y-6" data-testid="mate-ai-message-feed">
             {messages.map((msg) => (
               <div
                 key={msg.id}
@@ -517,7 +773,7 @@ export default function Learn() {
                   )}
                 </div>
 
-                <div className={cn('space-y-3', msg.role === 'user' ? 'text-right' : '')}>
+                <div className={cn('space-y-3 min-w-0', msg.role === 'user' ? 'text-right' : 'flex-1')}>
                   {/* Execution Source Badge and Elapsed Time for Assistant Responses */}
                   {msg.role === 'assistant' && (
                     <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted mb-1 flex-wrap">
@@ -530,7 +786,7 @@ export default function Learn() {
                       {msg.source === 'local' && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">
                           <HardDrive className="h-3 w-3" />
-                          Local WebGPU ({msg.model ? msg.model.split('-')[0] : 'SmolLM2'})
+                          Mate AI (Offline) ({msg.model ? msg.model.split('-')[0] : 'SmolLM2'})
                         </span>
                       )}
                       {msg.source === 'mock-fallback' && (
@@ -547,27 +803,38 @@ export default function Learn() {
                     </div>
                   )}
 
+                  {(msg.content || !msg.code || (isGenerating && activeAssistantId === msg.id)) && (
                   <div
                     className={cn(
-                      'inline-block rounded-2xl px-5 py-3 text-sm leading-relaxed whitespace-pre-wrap',
+                      'inline-block max-w-full rounded-2xl px-5 py-3 text-sm leading-relaxed',
                       msg.role === 'user'
-                        ? 'bg-primary text-white'
-                        : 'bg-gray-100 text-dark border border-gray-200/60'
+                        ? 'bg-primary text-white whitespace-pre-wrap'
+                        : 'bg-gray-100 text-dark border border-gray-200/60 text-left'
                     )}
                   >
                     {msg.content ? (
-                      <div>
+                      msg.role === 'assistant' ? (
+                        <div>
+                          <MarkdownMessage
+                            content={msg.content}
+                            streaming={isGenerating && activeAssistantId === msg.id}
+                          />
+                          {isGenerating && activeAssistantId === msg.id && (
+                            <span
+                              aria-hidden="true"
+                              className="inline-block w-2 h-4 mt-1 bg-primary/70 animate-pulse align-middle rounded-xs"
+                            />
+                          )}
+                        </div>
+                      ) : (
                         <span>{msg.content}</span>
-                        {isGenerating && activeAssistantId === msg.id && (
-                          <span className="inline-block w-2 h-4 ml-1 bg-primary/70 animate-pulse align-middle rounded-xs" />
-                        )}
-                      </div>
+                      )
                     ) : isGenerating && activeAssistantId === msg.id ? (
                       <div className="flex flex-col gap-1.5 py-1">
                         <div className="flex items-center gap-2 text-xs">
                           <span className="w-2 h-2 rounded-full bg-primary animate-ping" />
                           <span className="font-semibold text-dark/90">
-                            {phaseDetail || (currentPhase === 'preparing' ? 'Preparing local AI...' : currentPhase === 'generating' ? 'Generating answer...' : currentPhase === 'switching' ? 'Switching AI mode...' : 'Thinking...')}
+                            {phaseDetail || (currentPhase === 'preparing' ? 'Preparing Mate AI (Offline)...' : currentPhase === 'generating' ? 'Generating answer...' : currentPhase === 'switching' ? 'Switching Mate AI mode...' : 'Thinking...')}
                           </span>
                           <span className="text-[11px] font-mono text-muted bg-white/80 px-1.5 py-0.5 rounded border border-border/60">
                             {elapsedSeconds.toFixed(1)}s
@@ -585,19 +852,25 @@ export default function Learn() {
                       </span>
                     )}
                   </div>
+                  )}
 
                   {msg.code && (
-                    <div className="rounded-xl bg-slate-900 text-slate-50 p-4 font-mono text-sm overflow-x-auto w-full max-w-2xl text-left border border-slate-800 shadow-sm">
-                      <pre>
-                        <code>{msg.code}</code>
-                      </pre>
+                    <div className="w-full max-w-2xl">
+                      <CodeBlock code={msg.code} />
                     </div>
                   )}
 
                   {msg.explanation && (
                     <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-sm text-dark/80 text-left w-full max-w-2xl">
-                      {msg.explanation}
+                      <MarkdownMessage content={msg.explanation} />
                     </div>
+                  )}
+
+                  {msg.visual && (
+                    <VisualRenderer
+                      visual={msg.visual}
+                      onRetry={() => handleChipClick('Show visually')}
+                    />
                   )}
                 </div>
               </div>
@@ -635,9 +908,9 @@ export default function Learn() {
                 }}
                 placeholder={
                   isGenerating
-                    ? 'AI is generating... You can draft your next question or switch modes anytime above.'
+                    ? 'Mate AI is generating... You can draft your next question or switch modes anytime above.'
                     : activeMode === 'offline' && !isLocalReady
-                    ? 'Initialize local model on the right panel to begin offline tutoring...'
+                    ? 'Initialize Mate AI (Offline) on the right panel to begin offline tutoring...'
                     : 'Ask MindMate to explain, quiz you, or solve a problem...'
                 }
                 className="w-full resize-none rounded-xl border border-border bg-white pl-4 pr-24 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent min-h-[56px] max-h-[120px] shadow-sm"
@@ -668,135 +941,206 @@ export default function Learn() {
               </div>
             </div>
           </div>
-        </div>
+          </div>
+          {/* End collapsible chat body */}
+        </section>
 
-        {/* Right side: Learning Context & Offline Model Hardware Manager */}
-        <div className="w-full lg:w-[340px] flex-shrink-0 flex flex-col gap-6 h-full overflow-y-auto">
-          
-          {/* Offline / Local AI Control Card */}
-          <Card className="p-5 border-border bg-surface shadow-sm">
-            <div className="flex items-center justify-between border-b pb-3 mb-4">
-              <h3 className="font-semibold text-sm flex items-center gap-2">
-                <Cpu className="h-4 w-4 text-emerald-600" /> Local Offline AI
-              </h3>
-              <span
+        {/* Right side: Learning Context & Offline Model Hardware Manager (Offline mode only) */}
+        {activeMode === 'offline' && (
+          <div className="w-full lg:w-[340px] flex-shrink-0 flex flex-col gap-6 h-auto lg:h-full lg:overflow-y-auto animate-in fade-in slide-in-from-right-4 duration-300">
+            
+            {/* Mate AI (Offline) Control Card (Collapsible) */}
+            <Card className="border-border bg-surface shadow-sm overflow-hidden">
+              <div
+                onClick={() => setIsLocalAiExpanded(!isLocalAiExpanded)}
+                className="p-4 flex items-center justify-between cursor-pointer select-none hover:bg-gray-50/80 transition-colors"
+                role="button"
+                tabIndex={0}
+                aria-expanded={isLocalAiExpanded}
+                aria-label="Toggle Mate AI (Offline) panel"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setIsLocalAiExpanded(!isLocalAiExpanded);
+                  }
+                }}
+              >
+                <h3 className="font-semibold text-sm flex items-center gap-2">
+                  <Cpu className="h-4 w-4 text-emerald-600" />
+                  <span>Mate AI (Offline)</span>
+                </h3>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'text-[10px] uppercase font-bold px-2 py-0.5 rounded-full',
+                      isLocalReady
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-gray-100 text-gray-600'
+                    )}
+                  >
+                    {isLocalReady ? 'Ready' : 'Not Loaded'}
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      'h-4 w-4 text-muted transition-transform duration-300 ease-in-out',
+                      isLocalAiExpanded ? 'rotate-180' : 'rotate-0'
+                    )}
+                  />
+                </div>
+              </div>
+
+              <div
                 className={cn(
-                  'text-[10px] uppercase font-bold px-2 py-0.5 rounded-full',
-                  isLocalReady
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-gray-100 text-gray-600'
+                  'transition-all duration-300 ease-in-out overflow-hidden',
+                  isLocalAiExpanded
+                    ? 'max-h-[600px] opacity-100 border-t border-border p-5 pt-4'
+                    : 'max-h-0 opacity-0 p-0 border-t-0'
                 )}
               >
-                {isLocalReady ? 'Ready' : 'Not Loaded'}
-              </span>
-            </div>
+                <div className="space-y-4 text-xs">
+                  <div>
+                    <p className="text-muted font-semibold uppercase tracking-wider mb-1">Local Model</p>
+                    <select
+                      value={selectedLocalModel}
+                      onChange={(e) => setSelectedLocalModel(e.target.value)}
+                      disabled={isGenerating || isInitializingModel}
+                      className="w-full rounded-lg border border-border bg-white p-2 text-xs focus:ring-2 focus:ring-primary outline-none"
+                    >
+                      {SUPPORTED_LOCAL_MODELS.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} ({m.size})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-            <div className="space-y-4 text-xs">
-              <div>
-                <p className="text-muted font-semibold uppercase tracking-wider mb-1">Local Model</p>
-                <select
-                  value={selectedLocalModel}
-                  onChange={(e) => setSelectedLocalModel(e.target.value)}
-                  disabled={isGenerating || isInitializingModel}
-                  className="w-full rounded-lg border border-border bg-white p-2 text-xs focus:ring-2 focus:ring-primary outline-none"
-                >
-                  {SUPPORTED_LOCAL_MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} ({m.size})
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  <div className="flex items-center justify-between py-1 border-y border-border/50 text-muted">
+                    <span>Hardware Acceleration</span>
+                    <span className={cn('font-semibold flex items-center gap-1', isWebGpu ? 'text-emerald-600' : 'text-amber-600')}>
+                      {isWebGpu ? <CheckCircle className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+                      {isWebGpu ? 'WebGPU Active' : 'No WebGPU'}
+                    </span>
+                  </div>
 
-              <div className="flex items-center justify-between py-1 border-y border-border/50 text-muted">
-                <span>Hardware Acceleration</span>
-                <span className={cn('font-semibold flex items-center gap-1', isWebGpu ? 'text-emerald-600' : 'text-amber-600')}>
-                  {isWebGpu ? <CheckCircle className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
-                  {isWebGpu ? 'WebGPU Active' : 'No WebGPU'}
-                </span>
-              </div>
-
-              {!isLocalReady ? (
-                <div className="space-y-2">
-                  <Button
-                    onClick={handleInitLocalModel}
-                    disabled={!isWebGpu || isInitializingModel}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-9 flex items-center justify-center gap-1.5 shadow-xs"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    {aiStatus?.localModelCached ? 'Load Cached Model' : 'Download & Load Model'}
-                  </Button>
-                  <p className="text-[11px] text-muted leading-relaxed text-center">
-                    Requires a one-time download while online. Once cached, runs 100% locally with zero internet.
-                  </p>
-                </div>
-              ) : (
-                <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 text-emerald-900 space-y-1">
-                  <p className="font-semibold flex items-center gap-1.5 text-xs">
-                    <CheckCircle className="h-4 w-4 text-emerald-600" /> Offline Tutoring Available
-                  </p>
-                  <p className="text-[11px] text-emerald-800/80 leading-relaxed">
-                    Model is loaded into device memory. You can disconnect your network and continue learning without cloud connectivity.
-                  </p>
-                </div>
-              )}
-            </div>
-          </Card>
-
-          {/* Learning Context Card */}
-          <Card className="p-5">
-            <h3 className="font-semibold text-lg flex items-center gap-2 border-b pb-3 mb-4">
-              <Brain className="h-5 w-5 text-primary" /> Learning Context
-            </h3>
-
-            <div className="space-y-5">
-              <div>
-                <p className="text-xs text-muted mb-1 uppercase tracking-wider font-semibold">Current Topic</p>
-                <p className="font-medium text-dark flex items-center gap-2">
-                  <Code2 className="h-4 w-4 text-primary" /> {currentTopic}
-                </p>
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-1 text-xs font-medium">
-                  <span className="text-muted uppercase tracking-wider font-semibold">Mastery</span>
-                  <span className="text-primary">48%</span>
-                </div>
-                <ProgressBar value={48} className="h-1.5" />
-              </div>
-
-              <div>
-                <p className="text-xs text-muted mb-1 uppercase tracking-wider font-semibold">Level</p>
-                <div className="inline-flex items-center rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800">
-                  Intermediate
+                  {!isLocalReady ? (
+                    <div className="space-y-2">
+                      <Button
+                        onClick={handleInitLocalModel}
+                        disabled={!isWebGpu || isInitializingModel}
+                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-9 flex items-center justify-center gap-1.5 shadow-xs"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {aiStatus?.localModelCached ? 'Load Cached Model' : 'Download & Load Model'}
+                      </Button>
+                      <p className="text-[11px] text-muted leading-relaxed text-center">
+                        Requires a one-time download while online. Once cached, runs 100% locally with zero internet.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 text-emerald-900 space-y-1">
+                      <p className="font-semibold flex items-center gap-1.5 text-xs">
+                        <CheckCircle className="h-4 w-4 text-emerald-600" /> Mate AI (Offline) Available
+                      </p>
+                      <p className="text-[11px] text-emerald-800/80 leading-relaxed">
+                        Model is loaded into device memory. You can disconnect your network and continue learning without cloud connectivity.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
+            </Card>
 
-              <div>
-                <p className="text-xs text-muted mb-1 uppercase tracking-wider font-semibold">Preferred Style</p>
-                <p className="text-sm flex items-center gap-2 text-dark/80">
-                  <BookOpen className="h-4 w-4 text-muted" /> Examples first
-                </p>
+            {/* Learning Context Card (Collapsible) */}
+            <Card className="border-border bg-surface shadow-sm overflow-hidden">
+              <div
+                onClick={() => setIsLearningContextExpanded(!isLearningContextExpanded)}
+                className="p-4 flex items-center justify-between cursor-pointer select-none hover:bg-gray-50/80 transition-colors"
+                role="button"
+                tabIndex={0}
+                aria-expanded={isLearningContextExpanded}
+                aria-label="Toggle Learning Context panel"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setIsLearningContextExpanded(!isLearningContextExpanded);
+                  }
+                }}
+              >
+                <h3 className="font-semibold text-sm flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-primary" />
+                  <span>Learning Context</span>
+                </h3>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
+                    48% Mastery
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      'h-4 w-4 text-muted transition-transform duration-300 ease-in-out',
+                      isLearningContextExpanded ? 'rotate-180' : 'rotate-0'
+                    )}
+                  />
+                </div>
               </div>
 
-              {quizMode && (
-                <div className="text-xs text-muted border-t pt-2">
-                  Quiz questions answered: {quizQuestionCount}
-                </div>
-              )}
-            </div>
-          </Card>
+              <div
+                className={cn(
+                  'transition-all duration-300 ease-in-out overflow-hidden',
+                  isLearningContextExpanded
+                    ? 'max-h-[700px] opacity-100 border-t border-border p-5 pt-4'
+                    : 'max-h-0 opacity-0 p-0 border-t-0'
+                )}
+              >
+                <div className="space-y-5">
+                  <div>
+                    <p className="text-xs text-muted mb-1 uppercase tracking-wider font-semibold">Current Topic</p>
+                    <p className="font-medium text-dark flex items-center gap-2 text-sm">
+                      <Code2 className="h-4 w-4 text-primary" /> {currentTopic}
+                    </p>
+                  </div>
 
-          {/* Adaptive Action Card */}
-          <Card className="p-5 bg-indigo-50 border-indigo-100">
-            <h3 className="font-semibold text-sm flex items-center gap-2 mb-2 text-primary">
-              <GitPullRequest className="h-4 w-4" /> Adaptive Guidance
-            </h3>
-            <p className="text-xs text-dark/80 leading-relaxed">
-              MindMate dynamically tailors explanations to your "Examples first" preference. In Offline mode, all personalization logic executes locally on your GPU.
-            </p>
-          </Card>
-        </div>
+                  <div>
+                    <div className="flex justify-between items-center mb-1 text-xs font-medium">
+                      <span className="text-muted uppercase tracking-wider font-semibold">Mastery</span>
+                      <span className="text-primary font-semibold">48%</span>
+                    </div>
+                    <ProgressBar value={48} className="h-1.5" />
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-muted mb-1 uppercase tracking-wider font-semibold">Level</p>
+                    <div className="inline-flex items-center rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800">
+                      Intermediate
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-muted mb-1 uppercase tracking-wider font-semibold">Preferred Style</p>
+                    <p className="text-xs flex items-center gap-2 text-dark/80">
+                      <BookOpen className="h-4 w-4 text-muted" /> Examples first
+                    </p>
+                  </div>
+
+                  {quizMode && (
+                    <div className="text-xs text-muted border-t pt-2">
+                      Quiz questions answered: {quizQuestionCount}
+                    </div>
+                  )}
+
+                  {/* Adaptive Guidance section inside Learning Context */}
+                  <div className="rounded-lg p-3.5 bg-indigo-50/70 border border-indigo-100 space-y-1 mt-2">
+                    <p className="font-semibold text-xs flex items-center gap-1.5 text-primary">
+                      <GitPullRequest className="h-3.5 w-3.5" /> Adaptive Guidance
+                    </p>
+                    <p className="text-[11px] text-dark/80 leading-relaxed">
+                      MindMate dynamically tailors explanations to your "Examples first" preference. In Offline mode, all personalization logic executes locally on your GPU.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
 
       </div>
     </AppShell>

@@ -9,6 +9,7 @@ import {
 } from './types';
 import { cloudAIAdapter } from './cloudAdapter';
 import { localWebLLMAdapter, DEFAULT_LOCAL_MODEL } from './localWebLLMAdapter';
+import { contentModerationService } from '../safety/contentModerationService';
 
 const MODE_STORAGE_KEY = 'mindmate_ai_mode';
 
@@ -167,6 +168,34 @@ export class AITutorService {
     };
 
     try {
+      // Content safety and learning-relevance pre-flight check
+      const userMessages = mergedOptions.messages.filter((m) => m.role === 'user');
+      const lastUserMsg = userMessages[userMessages.length - 1];
+      const prevUserMsg = userMessages.length > 1 ? userMessages[userMessages.length - 2] : undefined;
+      const prevAssistantMsg = [...mergedOptions.messages].reverse().find((m) => m.role === 'assistant');
+
+      const promptToEvaluate = lastUserMsg?.promptContent || lastUserMsg?.content || '';
+      const moderationResult = contentModerationService.evaluate(promptToEvaluate, {
+        previousQuestion: prevUserMsg?.content,
+        previousAnswer: prevAssistantMsg?.content,
+        currentSubject: mergedOptions.learnerProfile?.goal
+      });
+
+      if (moderationResult.decision !== 'ALLOW') {
+        const refusalContent = moderationResult.userExplanation;
+        await new Promise((r) => setTimeout(r, 40));
+        guardedCallbacks.onPhaseChange?.('idle');
+        guardedCallbacks.onChunk?.(refusalContent);
+        const refusalResponse: AIResponse = {
+          content: refusalContent,
+          source: this.currentMode === 'offline' ? 'local' : this.currentMode === 'online' ? 'cloud' : 'local',
+          model: 'content-safety-guard',
+          elapsedMs: 5
+        };
+        guardedCallbacks.onComplete?.(refusalResponse);
+        return refusalResponse;
+      }
+
       if (this.currentMode === 'online') {
         return await this.executeOnline(mergedOptions, guardedCallbacks);
       } else if (this.currentMode === 'offline') {

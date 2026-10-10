@@ -8,6 +8,7 @@ import { authRouter } from './routes/auth.js';
 import { learnerRouter } from './routes/learner.js';
 import { socialRouter } from './routes/social.js';
 import dbBridgeRouter from './routes/dbBridge.js';
+import { visualRouter } from './routes/visual.js';
 import { setupMultiplayerWebSocket } from './services/multiplayerSocket.js';
 
 dotenv.config();
@@ -68,6 +69,9 @@ app.use('/api/ai', aiRouter);
 
 // Local DB Bridge Routes (Imported Friend MindMate Models)
 app.use('/api/db', dbBridgeRouter);
+
+// Visual Learning Engine Routes (Real-World Image Search & Media)
+app.use('/api/visual', visualRouter);
 
 // Global 404 handler
 app.use((_req, res) => {

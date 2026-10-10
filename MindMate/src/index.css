@@ -7,3 +7,45 @@
     @apply bg-background text-dark font-['Inter',sans-serif];
   }
 }
+
+/* ------------------------------------------------------------------
+ * Mate AI chat panel expand / collapse
+ * The panel animates between its fixed layout height and its natural
+ * (header-only) height. `interpolate-size` is a progressive enhancement
+ * (Chromium 129+); other browsers switch instantly while the body still fades.
+ * ------------------------------------------------------------------ */
+.mate-chat-shell {
+  interpolate-size: allow-keywords;
+  transition: height 300ms ease-in-out;
+}
+
+.mate-chat-body {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow: hidden;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    flex-grow 300ms ease-in-out,
+    opacity 250ms ease-in-out 50ms,
+    visibility 0s linear 0s;
+}
+
+.mate-chat-body[data-collapsed='true'] {
+  flex: 0 0 0px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    flex-grow 300ms ease-in-out,
+    opacity 200ms ease-in-out,
+    visibility 0s linear 300ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mate-chat-shell,
+  .mate-chat-body,
+  .mate-chat-body[data-collapsed='true'] {
+    transition: none !important;
+  }
+}

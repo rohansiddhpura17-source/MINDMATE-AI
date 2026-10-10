@@ -1,4 +1,5 @@
 import * as webllm from '@mlc-ai/web-llm';
+import { COMPACT_FORMATTING_GUIDELINES } from './responseFormatting';
 import {
   IAITutorAdapter,
   SendMessageOptions,
@@ -7,6 +8,7 @@ import {
   ModelProgress
 } from './types';
 import { parseCodeAndExplanation } from './cloudAdapter';
+import { contentModerationService } from '../safety/contentModerationService';
 
 export const DEFAULT_LOCAL_MODEL = 'SmolLM2-360M-Instruct-q4f16_1-MLC';
 
@@ -196,23 +198,63 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
     let enrichedSystemPrompt =
       systemPrompt ||
       'You are MindMate, a concise and encouraging educational AI tutor running locally on the user device.';
+    enrichedSystemPrompt += `\n\nCore Subject & Context Rules:
+1. Directly and factually answer the user's active subject of inquiry. Never force programming or code into questions that are not about computer science or code.
+2. For biographical, historical, or real-person inquiries, provide neutral, objective, and factual information without graphic details or unsolicited code metaphors.
+3. When answering follow-up requests (such as "Explain differently", "Simplify", "Give example", "Quiz me", or "Show visually"), strictly preserve the subject of the immediately preceding question and answer. Never switch subjects or revert to previous syllabus topics on follow-up requests.
+4. If the required context to answer or re-explain is missing or ambiguous, ask the user to clarify instead of inventing context.
+5. Content safety & educational focus: MindMate is strictly an educational learning platform. Decline requests for adult entertainment, pornography, sexually explicit content, or explicit performers politely and redirect to academic subjects.
+6. Scientific biology & health exception: Legitimate questions about human reproduction, anatomy, puberty, STI prevention, and relationship consent must be answered factually, clinically, and age-appropriately without explicit depictions.`;
+    enrichedSystemPrompt += `\n${COMPACT_FORMATTING_GUIDELINES}`;
+
+    // Local pre-flight content moderation (strictly 0 network calls)
+    const userMessages = messages.filter((m) => m.role === 'user');
+    const lastUserMsg = userMessages[userMessages.length - 1];
+    const prevUserMsg = userMessages.length > 1 ? userMessages[userMessages.length - 2] : undefined;
+    const prevAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant');
+
+    const modResult = contentModerationService.evaluate(
+      lastUserMsg?.promptContent || lastUserMsg?.content || '',
+      {
+        previousQuestion: prevUserMsg?.content,
+        previousAnswer: prevAssistantMsg?.content
+      }
+    );
+
+    if (modResult.decision !== 'ALLOW') {
+      callbacks.onChunk?.(modResult.userExplanation);
+      const refusalResponse: AIResponse = {
+        content: modResult.userExplanation,
+        source: 'local',
+        model: 'content-safety-guard',
+        elapsedMs: Date.now() - startTime
+      };
+      callbacks.onComplete?.(refusalResponse);
+      return refusalResponse;
+    }
+
     if (learnerProfile) {
       enrichedSystemPrompt += `\nLearner: ${learnerProfile.name || 'Alex'} (${
         learnerProfile.learningStyle || 'Examples first'
-      }). Keep explanations focused.`;
+      }). Keep explanations focused on the user's question.`;
     }
 
-    // Optimization: Feed system prompt + recent conversation turns (last 4 messages)
+    // Optimization: Feed system prompt + recent conversation turns
     // to minimize prompt prefill latency on lightweight WebGPU local models.
-    const recentHistory = messages
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .slice(-4);
+    let recentHistory = messages.filter((m) => m.role === 'user' || m.role === 'assistant');
+    if (recentHistory.length > 4) {
+      recentHistory = recentHistory.slice(-4);
+      // Ensure history slice begins with a user message for coherent dialogue
+      if (recentHistory[0]?.role === 'assistant') {
+        recentHistory = recentHistory.slice(1);
+      }
+    }
 
     const chatMessages: webllm.ChatCompletionMessageParam[] = [
       { role: 'system', content: enrichedSystemPrompt },
       ...recentHistory.map((m) => ({
         role: m.role as 'user' | 'assistant',
-        content: m.content
+        content: m.promptContent || m.content
       }))
     ];
 

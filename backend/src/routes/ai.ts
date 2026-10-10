@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { cloudAIService } from '../services/ai.js';
+import { contentModerationService } from '../services/contentModeration.js';
 
 export const aiRouter = Router();
 
@@ -38,6 +39,49 @@ aiRouter.post('/chat', async (req: Request, res: Response) => {
   }
 
   const { messages, systemPrompt, temperature, maxTokens, stream } = parseResult.data;
+
+  // Content moderation check across latest message and conversational context
+  const userMessages = messages.filter((m) => m.role === 'user');
+  const lastUserMessage = userMessages[userMessages.length - 1]?.content || '';
+  const prevUserMessage = userMessages.length > 1 ? userMessages[userMessages.length - 2]?.content : undefined;
+  const assistantMessages = messages.filter((m) => m.role === 'assistant');
+  const prevAssistantMessage = assistantMessages[assistantMessages.length - 1]?.content;
+
+  const moderationResult = contentModerationService.evaluate(lastUserMessage, {
+    previousQuestion: prevUserMessage,
+    previousAnswer: prevAssistantMessage
+  });
+
+  if (moderationResult.decision !== 'ALLOW') {
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders?.();
+
+      res.write(
+        `data: ${JSON.stringify({
+          chunk: moderationResult.userExplanation,
+          model: 'content-safety-guard',
+          source: 'guard',
+          blocked: true,
+          decision: moderationResult.decision
+        })}\n\n`
+      );
+      res.write(`data: [DONE]\n\n`);
+      res.end();
+      return;
+    } else {
+      res.json({
+        content: moderationResult.userExplanation,
+        model: 'content-safety-guard',
+        source: 'guard',
+        blocked: true,
+        decision: moderationResult.decision
+      });
+      return;
+    }
+  }
 
   // Check if provider is configured
   const providerStatus = cloudAIService.getStatus();
