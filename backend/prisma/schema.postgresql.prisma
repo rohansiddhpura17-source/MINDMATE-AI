@@ -1,0 +1,330 @@
+// MindMate / AdaptLearn AI - PostgreSQL Schema (Target for Supabase Migration)
+// This schema preserves all Milestones 1-8 models while targeting PostgreSQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  role         String    @default("STUDENT")
+  goal         String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions               Session[]
+  preferences            UserPreference?
+  progress               LearnerProgress[]
+  quizAttempts           QuizAttempt[]
+  materials              LearningMaterial[]
+  syncEvents             SyncEvent[]
+  spacedReviews          SpacedRepetitionItem[]
+  studyTasks             StudyTask[]
+  sentFriendRequests     Friendship[]            @relation("SentFriendRequests")
+  receivedFriendRequests Friendship[]            @relation("ReceivedFriendRequests")
+  createdChallenges      QuizChallenge[]         @relation("CreatedChallenges")
+  receivedChallenges     QuizChallenge[]         @relation("ReceivedChallenges")
+  challengeSubmissions   ChallengeSubmission[]
+  achievements           UserAchievement[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("sessions")
+}
+
+model UserPreference {
+  id                      String    @id @default(uuid())
+  userId                  String    @unique
+  adaptiveDifficulty      Boolean   @default(true)
+  personalizedRecs        Boolean   @default(true)
+  proactiveAI             Boolean   @default(true)
+  learningInsights        Boolean   @default(true)
+  cloudAI                 Boolean   @default(false)
+  learningStyle           String    @default("visual")
+  dailyGoalMinutes        Int       @default(30)
+  targetDaysJson          String    @default("[\"Mon\",\"Tue\",\"Wed\",\"Thu\",\"Fri\"]")
+  preferredSessionMinutes Int       @default(15)
+  targetGoalDate          DateTime?
+  targetGoalName          String?
+  priorityTopicsJson      String    @default("[]")
+  reviewStrategy          String    @default("BALANCED")
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+model LearnerProgress {
+  id                   String   @id @default(uuid())
+  userId               String
+  topicId              String
+  topicName            String
+  masteryScore         Float    @default(50.0)
+  attemptCount         Int      @default(0)
+  correctCount         Int      @default(0)
+  streakDays           Int      @default(0)
+  confidenceLevel      String   @default("INSUFFICIENT_EVIDENCE")
+  currentDifficulty    String   @default("medium")
+  consecutiveCorrect   Int      @default(0)
+  consecutiveIncorrect Int      @default(0)
+  lastPracticed        DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topicId])
+  @@index([userId])
+  @@map("learner_progress")
+}
+
+model AdaptiveQuestion {
+  id           String   @id @default(uuid())
+  topicId      String
+  topicName    String
+  question     String
+  optionsJson  String
+  correct      Int
+  explanation  String
+  difficulty   String   @default("medium")
+  skill        String?
+  source       String   @default("SYSTEM")
+  materialId   String?
+  pageCitation Int?
+  createdAt    DateTime @default(now())
+
+  @@index([topicId])
+  @@index([topicId, difficulty])
+  @@map("adaptive_questions")
+}
+
+model QuizAttempt {
+  id             String   @id @default(uuid())
+  userId         String
+  clientEventId  String?  @unique
+  topicId        String
+  topicName      String
+  score          Float
+  totalQuestions Int
+  correctAnswers Int
+  answersJson    String   @default("[]")
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([topicId])
+  @@map("quiz_attempts")
+}
+
+model LearningMaterial {
+  id              String          @id @default(uuid())
+  userId          String
+  name            String
+  type            String          @default("PDF")
+  status          String          @default("QUEUED")
+  errorMessage    String?
+  pages           Int             @default(1)
+  fileSize        Int             @default(0)
+  filePath        String?
+  summaryJson     String?
+  keyConceptsJson String?
+  flashcardsJson  String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @default(now()) @updatedAt
+
+  user   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks DocumentChunk[]
+
+  @@index([userId])
+  @@map("learning_materials")
+}
+
+model DocumentChunk {
+  id         String   @id @default(uuid())
+  materialId String
+  chunkIndex Int
+  pageNumber Int
+  content    String
+  tokenCount Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId])
+  @@index([materialId, pageNumber])
+  @@map("document_chunks")
+}
+
+model SyncEvent {
+  id            String   @id @default(uuid())
+  userId        String
+  clientEventId String   @unique
+  eventType     String
+  status        String   @default("SYNCED")
+  payloadJson   String
+  syncedAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sync_events")
+}
+
+model SpacedRepetitionItem {
+  id               String    @id @default(uuid())
+  userId           String
+  topicId          String
+  topicName        String
+  materialId       String?
+  repetitionNumber Int       @default(0)
+  intervalDays     Float     @default(1.0)
+  easeFactor       Float     @default(2.5)
+  lastReviewedAt   DateTime?
+  nextReviewAt     DateTime  @default(now())
+  lastOutcome      String?
+  totalReviews     Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topicId])
+  @@index([userId])
+  @@index([userId, nextReviewAt])
+  @@map("spaced_repetition_items")
+}
+
+model StudyTask {
+  id                   String    @id @default(uuid())
+  userId               String
+  date                 String
+  dayOfWeek            String
+  topicId              String
+  topicName            String
+  type                 String
+  title                String
+  estimatedMinutes     Int       @default(15)
+  targetDifficulty     String    @default("medium")
+  isCompleted          Boolean   @default(false)
+  completedAt          DateTime?
+  isPostponed          Boolean   @default(false)
+  postponedToDate      String?
+  priorityScore        Float     @default(0.0)
+  recommendationReason String
+  source               String    @default("ALGORITHM")
+  actionUrl            String
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, date])
+  @@index([userId, isCompleted])
+  @@map("study_tasks")
+}
+
+model Friendship {
+  id          String   @id @default(uuid())
+  requesterId String
+  addresseeId String
+  status      String   @default("PENDING")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  requester User @relation("SentFriendRequests", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee User @relation("ReceivedFriendRequests", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, addresseeId])
+  @@index([requesterId])
+  @@index([addresseeId])
+  @@index([status])
+  @@map("friendships")
+}
+
+model QuizChallenge {
+  id                   String    @id @default(uuid())
+  challengerId         String
+  opponentId           String
+  topic                String
+  difficulty           String    @default("adaptive")
+  status               String    @default("PENDING")
+  questionsCount       Int       @default(5)
+  questionsJson        String
+  challengerScore      Int       @default(0)
+  opponentScore        Int       @default(0)
+  challengerFinishedAt DateTime?
+  opponentFinishedAt   DateTime?
+  winnerId             String?
+  isDraw               Boolean   @default(false)
+  expiresAt            DateTime
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  challenger  User                  @relation("CreatedChallenges", fields: [challengerId], references: [id], onDelete: Cascade)
+  opponent    User                  @relation("ReceivedChallenges", fields: [opponentId], references: [id], onDelete: Cascade)
+  submissions ChallengeSubmission[]
+
+  @@index([challengerId])
+  @@index([opponentId])
+  @@index([status])
+  @@map("quiz_challenges")
+}
+
+model ChallengeSubmission {
+  id               String   @id @default(uuid())
+  challengeId      String
+  userId           String
+  questionIndex    Int
+  selectedOption   Int
+  isCorrect        Boolean
+  timeTakenSeconds Float
+  pointsEarned     Int
+  submittedAt      DateTime @default(now())
+
+  challenge QuizChallenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([challengeId, userId, questionIndex])
+  @@index([challengeId])
+  @@index([userId])
+  @@map("challenge_submissions")
+}
+
+model UserAchievement {
+  id             String   @id @default(uuid())
+  userId         String
+  achievementKey String
+  title          String
+  description    String
+  badgeIcon      String
+  unlockedAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementKey])
+  @@index([userId])
+  @@map("user_achievements")
+}

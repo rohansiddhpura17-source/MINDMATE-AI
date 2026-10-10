@@ -1,0 +1,72 @@
+# MindMate AI 🧠 — Adaptive Learning Twin & Hybrid AI Tutor
+
+MindMate is a full-stack personalized learning companion that adapts in real-time to how each student learns. It features an evolving **Learning Twin**, a hybrid online (**Google Gemini**) and offline (**WebLLM / SmolLM2-360M on WebGPU**) AI Tutor, automated PDF document ingestion with grounded Q&A, evidence-based cognitive insights, spaced-repetition study planning, and authoritative multiplayer duels.
+
+---
+
+## 🏗️ Repository Architecture
+
+This repository contains the complete frontend, backend, database models, migrations, and test suites:
+
+- **[`MindMate/`](./MindMate)** — Modern frontend built with React 18, Vite, Tailwind CSS, Lucide icons, and Recharts.
+  - **Hybrid AI Engine:** Seamlessly switches between Cloud (Gemini streaming) and Local WebLLM (SmolLM2-360M quantized via WebGPU).
+  - **Zero-Latency Response:** Sliced prompt prefill and instant stream interrupts for 330ms Time-to-First-Token.
+  - **Offline Resilience:** IndexedDB synchronization engine queues offline quiz attempts and seamlessly reconciles upon reconnection.
+- **[`backend/`](./backend)** — High-performance backend API built with Express, TypeScript, and Prisma ORM.
+  - **Multi-Model AI Service:** Google Gemini streaming integration with fallback handling.
+  - **Document Processing:** PDF magic byte verification, text extraction, grounded chunking, and source citations.
+  - **Adaptive Engine & SM-2 Planner:** Pedagogical mastery modeling, spaced-repetition scheduling, and 1-click task conversion.
+  - **Authoritative Duels:** Real-time WebSocket game loop with sanitized challenge questions and streak persistence.
+  - **Dual Database Architecture:** Local SQLite development bridge with compatibility migrations for Supabase PostgreSQL.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Prerequisites
+- Node.js (v18 or higher)
+- npm or yarn
+
+### 2. Backend Setup
+```bash
+cd backend
+npm install
+cp .env.example .env
+npx prisma generate
+npx prisma migrate dev
+npm run dev
+# Backend server runs on http://localhost:4000
+```
+
+### 3. Frontend Setup
+```bash
+cd MindMate
+npm install
+cp .env.example .env
+npm run dev
+# Frontend runs on http://localhost:3000
+```
+
+---
+
+## 🧪 Testing
+
+The codebase includes comprehensive automated test suites covering all architectural layers:
+
+```bash
+# Run backend test suite (90 passing tests)
+cd backend
+npm test
+
+# Run frontend test suite (12 passing tests)
+cd MindMate
+npm test
+```
+
+---
+
+## 🔒 Security & Privacy
+
+- **No Secrets in Source:** All API credentials, keys, and private databases are excluded via `.gitignore`.
+- **Strict User Isolation:** Endpoints and database queries enforce user authorization and multi-tenant isolation.
+- **Privacy-First Local AI:** In Offline mode, all inference runs 100% locally on device WebGPU with zero network calls.
