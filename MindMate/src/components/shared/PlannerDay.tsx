@@ -1,68 +1,96 @@
 import React from 'react';
+import { PlannerDayData } from '../../types';
 import { TaskCard } from './TaskCard';
+import { Plus } from 'lucide-react';
 
-export interface PlannerDayComponentProps {
-  data: {
-    day?: string;
-    dayOfWeek?: string;
-    date?: string;
-    tasks: any[];
-    allocatedMinutes?: number;
-    isTargetDay?: boolean;
-    isTargetStudyDay?: boolean;
-  };
+interface PlannerDayProps {
+  data: PlannerDayData;
   isToday?: boolean;
-  onToggleDone?: (id?: string) => void;
-  onReschedule?: (id?: string) => void;
-  onStart?: (actionUrl?: string) => void;
+  onToggleTask?: (id: string, done: boolean) => void;
+  onEditTask?: (id: string) => void;
+  onDeleteTask?: (id: string) => void;
+  onAddTask?: (day: string) => void;
+  onStartPractice?: (id: string) => void;
 }
 
 export function PlannerDay({
   data,
   isToday = false,
-  onToggleDone,
-  onReschedule,
-  onStart,
-}: PlannerDayComponentProps) {
-  const dayName = data.dayOfWeek || data.day || 'Day';
-  const isTarget = data.isTargetStudyDay ?? data.isTargetDay ?? true;
+  onToggleTask,
+  onEditTask,
+  onDeleteTask,
+  onAddTask,
+  onStartPractice,
+}: PlannerDayProps) {
+  const completedCount = data.tasks.filter((t: any) => t.completed).length;
+  const totalCount = data.tasks.length;
 
   return (
-    <div className="flex flex-col flex-1 min-w-[170px] bg-gray-50/50 p-2.5 rounded-2xl border border-gray-100">
-      <div
-        className={`text-center py-2 mb-2 border-b font-semibold text-sm flex items-center justify-between ${
-          isToday ? 'border-primary text-primary' : 'border-gray-200 text-gray-700'
-        }`}
-      >
-        <span>{dayName}</span>
-        {data.allocatedMinutes !== undefined && data.allocatedMinutes > 0 && (
-          <span className="text-[11px] font-normal px-2 py-0.5 rounded-full bg-white border text-muted">
-            {data.allocatedMinutes}m
+    <div className="flex flex-col flex-1 min-w-[210px] bg-gray-50/50 dark:bg-slate-900/40 rounded-2xl p-3 border border-border">
+      {/* Day Header */}
+      <div className="flex items-center justify-between pb-2 mb-3 border-b border-border">
+        <div className="flex items-center gap-2">
+          <span className={`font-bold text-sm ${isToday ? 'text-primary' : 'text-dark'}`}>
+            {data.day}
           </span>
-        )}
+          {isToday && (
+            <span className="text-[10px] font-bold uppercase tracking-wider bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
+              Today
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          {totalCount > 0 && (
+            <span className="text-xs font-semibold text-muted bg-surface px-1.5 py-0.5 rounded border border-border">
+              {completedCount}/{totalCount}
+            </span>
+          )}
+          {onAddTask && (
+            <button
+              type="button"
+              onClick={() => onAddTask(data.day)}
+              className="p-1 rounded-md text-muted hover:text-primary hover:bg-surface border border-transparent hover:border-border transition-colors"
+              title={`Add task for ${data.day}`}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex flex-col gap-2.5">
-        {data.tasks.map((task, i) => (
+      {/* Task List */}
+      <div className="flex flex-col gap-2.5 flex-1">
+        {data.tasks.map((task: any, i) => (
           <TaskCard
-            key={task.id || i}
+            key={task.id || `task-${data.day}-${i}`}
             id={task.id}
-            name={task.title || task.name}
-            duration={task.duration || `${task.estimatedMinutes || 15} min`}
+            name={task.name}
+            duration={task.duration}
             type={task.type}
-            isDone={task.isCompleted ?? task.isDone}
-            isOverdue={task.isOverdue}
-            recommendationReason={task.recommendationReason}
-            actionUrl={task.actionUrl}
-            onToggleDone={onToggleDone}
-            onReschedule={onReschedule}
-            onStart={onStart}
+            priority={task.priority}
+            dueDate={task.due_date}
+            isDone={task.completed}
+            activityCompleted={task.activity_completed}
+            onToggle={onToggleTask}
+            onEdit={onEditTask}
+            onDelete={onDeleteTask}
+            onStartPractice={onStartPractice}
           />
         ))}
 
         {data.tasks.length === 0 && (
-          <div className="text-center text-xs text-muted py-6 border border-dashed rounded-xl border-gray-200 bg-white">
-            {isTarget ? 'No sessions scheduled' : 'Rest day'}
+          <div className="flex flex-col items-center justify-center py-6 px-3 border border-dashed rounded-xl border-border text-center flex-1">
+            <p className="text-xs text-muted mb-2 font-medium">Rest day</p>
+            {onAddTask && (
+              <button
+                type="button"
+                onClick={() => onAddTask(data.day)}
+                className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1"
+              >
+                <Plus className="h-3 w-3" /> Add task
+              </button>
+            )}
           </div>
         )}
       </div>

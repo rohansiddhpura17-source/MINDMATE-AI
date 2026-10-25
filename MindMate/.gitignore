@@ -25,4 +25,9 @@ npm-debug.log*
 
 # OS
 .DS_Store
+._*
+**/._*
 Thumbs.db
+
+# OCR Cache
+*.traineddata

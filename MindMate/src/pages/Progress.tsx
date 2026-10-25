@@ -1,219 +1,658 @@
-import React, { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { AppShell } from '../components/layout/AppShell';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { ProgressBar } from '../components/ui/ProgressBar';
+import { Badge } from '../components/ui/Badge';
 import { ChartCard } from '../components/shared/ChartCard';
-import { InsightCard } from '../components/shared/InsightCard';
-import { learner, topics, weeklyData } from '../data/mockData';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+} from 'recharts';
 import { useNavigate } from 'react-router-dom';
-import { Target, TrendingUp, AlertTriangle } from 'lucide-react';
-import { learnerApi } from '../services/api/learnerApi';
+import {
+  TrendingUp,
+  AlertTriangle,
+  Cloud,
+  HardDrive,
+  RefreshCw,
+  Sparkles,
+  BookOpen,
+  CheckCircle2,
+  Clock,
+  HelpCircle,
+} from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
+import { useMastery } from '../hooks/useMastery';
+import { retryUnsyncedAttempts } from '../services/assessment/assessmentService';
+import { STRATEGY_LABELS } from '../services/adaptive/adaptiveLearningEngine';
 
-import { offlineLearner } from '../services/storage/offlineLearner';
+function buildSevenDayAttemptChart(
+  attempts: Array<{ attempted_at: string; is_correct: boolean }>
+) {
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const buckets: Array<{ day: string; dateKey: string; attempts: number; correct: number }> = [];
+  const now = new Date();
+
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    const dateKey = d.toISOString().slice(0, 10);
+    buckets.push({
+      day: days[d.getDay()],
+      dateKey,
+      attempts: 0,
+      correct: 0,
+    });
+  }
+
+  for (const att of attempts) {
+    const dateKey = (att.attempted_at || '').slice(0, 10);
+    const bucket = buckets.find((b) => b.dateKey === dateKey);
+    if (bucket) {
+      bucket.attempts += 1;
+      if (att.is_correct) bucket.correct += 1;
+    }
+  }
+
+  return buckets;
+}
 
 export default function Progress() {
   const navigate = useNavigate();
-  const { isAuthenticated, user, isOnline } = useAppContext();
-  const [overallMastery, setOverallMastery] = useState(learner.overallMastery);
-  const [topicList, setTopicList] = useState(topics);
+  const { user } = useAppContext();
+  const { snapshot, loading, refresh } = useMastery();
+  const [syncing, setSyncing] = useState(false);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!isAuthenticated || !user?.id) return;
-
-    // 1. Immediately read from offline IndexedDB storage
-    offlineLearner.getAllProgressOffline(user.id).then((offlineTopics) => {
-      if (offlineTopics && offlineTopics.length > 0) {
-        const total = offlineTopics.reduce((acc, t) => acc + t.masteryScore, 0);
-        setOverallMastery(Math.round(total / offlineTopics.length));
-        setTopicList(offlineTopics.map((t) => ({
-          topicId: t.topicId,
-          name: t.topicName,
-          mastery: Math.round(t.masteryScore),
-          attemptCount: t.attemptCount,
-          correctCount: t.correctCount,
-          confidenceLevel: t.confidenceLevel,
-          currentDifficulty: t.currentDifficulty,
-          streak: t.streakDays,
-          status: t.masteryScore >= 80 ? 'mastered' : t.masteryScore >= 60 ? 'strong' : t.masteryScore >= 40 ? 'developing' : 'needs-work',
-        })));
-      }
-    });
-
-    // 2. If online, fetch fresh server data and cache to IndexedDB
-    if (isOnline) {
-      learnerApi.getProgress()
-        .then((data) => {
-          if (data.success && data.topics.length > 0) {
-            setOverallMastery(data.overallMastery);
-            setTopicList(data.topics.map((t) => ({
-              topicId: t.topicId,
-              name: t.name,
-              mastery: t.mastery,
-              attemptCount: t.attemptCount,
-              correctCount: t.correctCount,
-              confidenceLevel: t.confidenceLevel,
-              currentDifficulty: t.currentDifficulty,
-              streak: t.streak,
-              status: t.mastery >= 80 ? 'mastered' : t.mastery >= 60 ? 'strong' : t.mastery >= 40 ? 'developing' : 'needs-work',
-            })));
-            if (user?.id) {
-              offlineLearner.cacheServerProgress(user.id, data.topics);
-            }
-          }
-        })
-        .catch((err) => console.warn('[Progress Load Error]', err));
+  const handleRetrySync = async () => {
+    setSyncing(true);
+    setSyncNotice(null);
+    try {
+      const res = await retryUnsyncedAttempts(user?.id || 'guest');
+      setSyncNotice(res.message);
+      await refresh();
+    } finally {
+      setSyncing(false);
     }
-  }, [isAuthenticated, user?.id, isOnline]);
+  };
+
+  const assessedTopics = snapshot.topics.filter((t) => t.totalAttempts > 0);
+  const weakestAssessed =
+    assessedTopics.length > 0
+      ? [...assessedTopics].sort((a, b) => a.masteryScore - b.masteryScore)[0]
+      : null;
+
+  const sevenDayData = buildSevenDayAttemptChart(snapshot.recentAttempts);
 
   return (
-    <AppShell pageTitle="Progress" pageSubtitle="Track your mastery over time">
+    <AppShell
+      pageTitle="Assessment Analytics & Mastery"
+      pageSubtitle="Live deterministic topic mastery, confidence intervals, recurring mistake analysis, and evidence-backed recommendations"
+    >
       <div className="max-w-6xl space-y-8">
-        
+        {/* Data Source & Persistence Status Banner */}
+        <div
+          role="status"
+          aria-live="polite"
+          className={`flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl border text-xs ${
+            snapshot.syncError
+              ? 'border-red-500/30 bg-red-500/10 text-red-800 dark:text-red-300'
+              : snapshot.dataSource === 'cloud_and_local'
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
+                : 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            {snapshot.dataSource === 'cloud_and_local' ? (
+              <Cloud className="h-4 w-4 shrink-0" />
+            ) : (
+              <HardDrive className="h-4 w-4 shrink-0" />
+            )}
+            <div>
+              <span className="font-bold">
+                {snapshot.dataSource === 'cloud_and_local'
+                  ? 'Cloud + Local Persistence Active: '
+                  : !snapshot.isSupabaseConfigured
+                    ? 'Local Persistence Mode (Supabase Not Configured): '
+                    : 'Local Device Storage: '}
+              </span>
+              <span>
+                {snapshot.syncError
+                  ? `Cloud sync encountered an error (${snapshot.syncError}). Showing verified local attempts.`
+                  : !snapshot.isSupabaseConfigured
+                    ? 'All quiz attempts and mastery metrics are saved in local storage on this Mac.'
+                    : 'Analytics are computed directly from your recorded question attempts.'}
+              </span>
+              {syncNotice && <span className="block font-semibold mt-1">{syncNotice}</span>}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {snapshot.isSupabaseConfigured && user && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleRetrySync}
+                disabled={syncing || loading}
+                className="h-8 text-xs flex items-center gap-1.5"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                {syncing ? 'Syncing...' : 'Sync Pending Attempts'}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void refresh()}
+              disabled={loading}
+              className="h-8 text-xs flex items-center gap-1"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
+        </div>
+
+        {/* Top Summary Metrics */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <Card className="p-5 border border-border">
+            <span className="text-xs text-muted font-medium block">Total Attempts</span>
+            <span className="text-2xl font-bold text-dark mt-1 block">
+              {snapshot.totalAttempts}
+            </span>
+            <span className="text-[11px] text-muted">
+              {snapshot.totalCorrect} correct / {snapshot.totalAttempts - snapshot.totalCorrect} incorrect
+            </span>
+          </Card>
+
+          <Card className="p-5 border border-border">
+            <span className="text-xs text-muted font-medium block">Overall Accuracy</span>
+            <span className="text-2xl font-bold text-primary mt-1 block">
+              {snapshot.totalAttempts > 0 ? `${snapshot.overallAccuracy}%` : '—'}
+            </span>
+            <span className="text-[11px] text-muted">
+              {snapshot.totalAttempts > 0
+                ? `Recent window: ${snapshot.recentAccuracy}%`
+                : 'No attempts recorded yet'}
+            </span>
+          </Card>
+
+          <Card className="p-5 border border-border">
+            <span className="text-xs text-muted font-medium block">Assessed Mastery Avg</span>
+            <span className="text-2xl font-bold text-purple-600 mt-1 block">
+              {snapshot.assessedTopicsCount > 0 ? `${snapshot.averageMastery}%` : '—'}
+            </span>
+            <span className="text-[11px] text-muted">
+              {snapshot.assessedTopicsCount} of {snapshot.totalTopicsCount} topics assessed
+            </span>
+          </Card>
+
+          <Card className="p-5 border border-border">
+            <span className="text-xs text-muted font-medium block">Active Mistake Patterns</span>
+            <span className="text-2xl font-bold text-amber-500 mt-1 block">
+              {snapshot.mistakePatterns.length}
+            </span>
+            <span className="text-[11px] text-muted">
+              {snapshot.mistakePatterns.filter((p) => p.isConfirmedPattern).length} confirmed recurring pattern(s)
+            </span>
+          </Card>
+        </div>
+
+        {/* Honest Empty State when 0 attempts exist */}
+        {snapshot.totalAttempts === 0 && (
+          <Card className="p-8 border border-dashed border-primary/40 bg-primary/5 text-center space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-primary/10 text-primary mx-auto flex items-center justify-center">
+              <HelpCircle className="h-6 w-6" />
+            </div>
+            <div className="space-y-1 max-w-lg mx-auto">
+              <h3 className="text-lg font-bold text-dark">
+                No Assessment Evidence Recorded Yet
+              </h3>
+              <p className="text-sm text-muted">
+                MindMate does not invent mastery scores before you answer questions. Take a short diagnostic or adaptive quiz to compute your baseline topic mastery and unlock personalized recommendations.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <Button onClick={() => navigate('/quiz')}>
+                Start Diagnostic Baseline Quiz
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => navigate('/practice/adaptive-quiz?topic=python-variables&type=diagnostic')}
+              >
+                Practice Python Variables & Scope
+              </Button>
+            </div>
+          </Card>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
-          {/* Left Col - Mastery & Topics */}
+          {/* Left Col - Topic Mastery Breakdown */}
           <div className="lg:col-span-3 space-y-8">
-            <Card className="p-8 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-white">
-              <div>
-                <h3 className="text-lg font-semibold text-dark mb-1">Overall Mastery</h3>
-                <p className="text-muted text-sm max-w-sm mb-4">You're making steady progress towards your goal. Keep it up!</p>
-                <div className="flex items-center gap-2 text-success font-medium text-sm">
-                  <TrendingUp className="h-4 w-4" /> +5% this week
+            <Card className="p-6 space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-lg text-dark">
+                    Topic Mastery & Evidence Breakdown
+                  </h3>
+                  <p className="text-xs text-muted">
+                    Recency- and difficulty-weighted mastery with sample-size confidence damping
+                  </p>
                 </div>
               </div>
-              
-              <div className="relative h-32 w-32 flex-shrink-0">
-                <svg className="w-full h-full transform -rotate-90">
-                  <circle cx="64" cy="64" r="60" className="stroke-indigo-100" strokeWidth="8" fill="none" />
-                  <circle 
-                    cx="64" cy="64" r="60" 
-                    className="stroke-primary transition-all duration-1000 ease-out" 
-                    strokeWidth="8" 
-                    fill="none" 
-                    strokeDasharray={`${2 * Math.PI * 60}`}
-                    strokeDashoffset={`${2 * Math.PI * 60 * (1 - overallMastery / 100)}`}
-                  />
-                </svg>
-                <div className="absolute inset-0 flex items-center justify-center flex-col">
-                  <span className="text-3xl font-bold text-dark">{overallMastery}%</span>
-                </div>
+
+              <div className="space-y-6">
+                {snapshot.topics.map((topic) => (
+                  <div
+                    key={topic.topicId}
+                    className="p-4 rounded-xl border border-border bg-gray-50/40 dark:bg-slate-800/30 space-y-3"
+                  >
+                    <div className="flex flex-wrap justify-between items-start gap-2">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-dark text-sm">
+                            {topic.topicName}
+                          </span>
+                          <Badge variant="default" className="text-[10px] capitalize">
+                            {topic.status}
+                          </Badge>
+                          <Badge variant="default" className="text-[10px] capitalize">
+                            Confidence: {topic.confidenceLevel}
+                          </Badge>
+                        </div>
+                        <p className="text-[11px] text-muted mt-0.5">
+                          {topic.totalAttempts > 0
+                            ? `${topic.correctAnswers}/${topic.totalAttempts} correct • Overall ${topic.overallAccuracy}% • Recent ${topic.recentAccuracy}%`
+                            : '0 attempts recorded'}
+                        </p>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-lg font-bold text-dark">
+                          {topic.totalAttempts > 0 ? `${topic.masteryScore}%` : 'Unassessed'}
+                        </span>
+                        {topic.lastPracticedAt && (
+                          <span className="block text-[10px] text-muted flex items-center justify-end gap-1">
+                            <Clock className="h-3 w-3" />
+                            {new Date(topic.lastPracticedAt).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <ProgressBar
+                      value={topic.masteryScore}
+                      colorClass={
+                        topic.totalAttempts === 0
+                          ? 'bg-gray-300'
+                          : topic.masteryScore < 45
+                            ? 'bg-danger'
+                            : topic.masteryScore < 75
+                              ? 'bg-warning'
+                              : 'bg-success'
+                      }
+                    />
+
+                    {topic.totalAttempts > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted pt-1">
+                        <div className="flex flex-wrap gap-3">
+                          <span>
+                            Easy:{' '}
+                            <strong>
+                              {topic.difficultyPerformance.easy.accuracy !== null
+                                ? `${topic.difficultyPerformance.easy.accuracy}% (${topic.difficultyPerformance.easy.correct}/${topic.difficultyPerformance.easy.attempts})`
+                                : '—'}
+                            </strong>
+                          </span>
+                          <span>
+                            Medium:{' '}
+                            <strong>
+                              {topic.difficultyPerformance.medium.accuracy !== null
+                                ? `${topic.difficultyPerformance.medium.accuracy}% (${topic.difficultyPerformance.medium.correct}/${topic.difficultyPerformance.medium.attempts})`
+                                : '—'}
+                            </strong>
+                          </span>
+                          <span>
+                            Hard:{' '}
+                            <strong>
+                              {topic.difficultyPerformance.hard.accuracy !== null
+                                ? `${topic.difficultyPerformance.hard.accuracy}% (${topic.difficultyPerformance.hard.correct}/${topic.difficultyPerformance.hard.attempts})`
+                                : '—'}
+                            </strong>
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              navigate(
+                                `/practice/adaptive-quiz?topic=${encodeURIComponent(topic.topicId)}&type=${topic.totalAttempts <= 2 ? 'follow_up' : 'adaptive'}`
+                              )
+                            }
+                            className="text-primary font-semibold hover:underline"
+                          >
+                            {topic.totalAttempts <= 2 ? 'Verify with Follow-Up' : 'Practice'}
+                          </button>
+                          <span>•</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              navigate(`/learn?topic=${encodeURIComponent(topic.topicId)}`)
+                            }
+                            className="text-primary font-semibold hover:underline"
+                          >
+                            AI Tutor
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             </Card>
 
-            <Card className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-bold text-lg">Bayesian Topic Mastery</h3>
-                <span className="text-xs text-muted font-medium bg-gray-100 px-2.5 py-1 rounded-full">
-                  Prior: Beta(2, 2)
-                </span>
+            {/* Evidence-Backed Recommendations */}
+            <Card className="p-6 space-y-4">
+              <div>
+                <h3 className="font-bold text-lg text-dark flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-primary" />
+                  Evidence-Based Recommendations
+                </h3>
+                <p className="text-xs text-muted">
+                  Generated deterministically from your stored attempts, accuracy trends, and curriculum prerequisites
+                </p>
               </div>
-              <p className="text-xs text-muted mb-6">
-                Mastery is calibrated with empirical evidence. Low attempt counts indicate early calibration rather than fixed ability.
-              </p>
-              <div className="space-y-6">
-                {topicList.map((topic: any, i: number) => {
-                  const conf = topic.confidenceLevel || 'INSUFFICIENT_EVIDENCE';
-                  const confBadgeClass =
-                    conf === 'HIGH'
-                      ? 'bg-green-100 text-green-800 border-green-200'
-                      : conf === 'MEDIUM'
-                      ? 'bg-blue-100 text-blue-800 border-blue-200'
-                      : conf === 'LOW'
-                      ? 'bg-amber-100 text-amber-800 border-amber-200'
-                      : 'bg-yellow-100 text-yellow-800 border-yellow-200';
 
-                  const confLabel =
-                    conf === 'HIGH'
-                      ? 'High Confidence'
-                      : conf === 'MEDIUM'
-                      ? 'Medium Confidence'
-                      : conf === 'LOW'
-                      ? 'Low Evidence'
-                      : 'Calibrating Baseline';
-
-                  return (
-                    <div key={i} className="border-b border-gray-100 pb-4 last:border-0 last:pb-0">
-                      <div className="flex justify-between items-center mb-1.5">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-dark">{topic.name}</span>
-                          {topic.currentDifficulty && (
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 capitalize font-medium">
-                              {topic.currentDifficulty}
-                            </span>
-                          )}
-                          <span className={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${confBadgeClass}`}>
-                            {confLabel}
-                          </span>
-                        </div>
-                        <span className="text-sm text-muted font-semibold">{topic.mastery}%</span>
+              <div className="space-y-3">
+                {snapshot.recommendations.slice(0, 5).map((rec) => (
+                  <div
+                    key={rec.id}
+                    className="p-4 rounded-xl border border-border bg-surface flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-sm text-dark">
+                          {rec.topicName}
+                        </span>
+                        <Badge variant="default" className="text-[10px] uppercase">
+                          {rec.action.replace(/-/g, ' ')}
+                        </Badge>
+                        <Badge variant="default" className="text-[10px]">
+                          Difficulty: {rec.suggestedDifficulty} (Lvl {rec.suggestedDifficultyLevel})
+                        </Badge>
                       </div>
-                      <ProgressBar
-                        value={topic.mastery}
-                        colorClass={topic.mastery < 50 ? 'bg-danger' : topic.mastery < 80 ? 'bg-warning' : 'bg-success'}
-                      />
-                      {(topic.attemptCount !== undefined && topic.attemptCount > 0) && (
-                        <div className="flex items-center justify-between text-[11px] text-muted mt-1.5">
-                          <span>Evidence: {topic.correctCount || 0} / {topic.attemptCount} correct</span>
-                          <span>Streak: {topic.streak || 0} days</span>
-                        </div>
-                      )}
+                      <p className="text-xs text-dark/90 leading-relaxed">{rec.reason}</p>
+                      <p className="text-[11px] text-muted">
+                        <strong>Evidence:</strong> {rec.supportingEvidence.detail} •{' '}
+                        <strong>Strategy:</strong> {STRATEGY_LABELS[rec.explanationStrategy]}
+                      </p>
                     </div>
-                  );
-                })}
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        onClick={() =>
+                          navigate(
+                            `/practice/adaptive-quiz?topic=${encodeURIComponent(rec.topicId)}&type=${rec.action === 'diagnostic-quiz' ? 'diagnostic' : 'follow_up'}&difficulty=${rec.suggestedDifficultyLevel}`
+                          )
+                        }
+                        className="text-xs"
+                      >
+                        Start Quiz
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() =>
+                          navigate(
+                            `/learn?topic=${encodeURIComponent(rec.topicId)}&strategy=${encodeURIComponent(rec.explanationStrategy)}`
+                          )
+                        }
+                        className="text-xs"
+                      >
+                        <BookOpen className="h-3.5 w-3.5 mr-1" />
+                        Learn
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </Card>
           </div>
 
-          {/* Right Col - Focus & Chart */}
+          {/* Right Col - Priority Focus, Mistake Patterns & 7-Day Activity */}
           <div className="lg:col-span-2 space-y-8">
-            {(() => {
-              const lowestTopic = [...topicList].sort((a: any, b: any) => a.mastery - b.mastery)[0];
-              const oppName = lowestTopic?.name || 'Object-Oriented Programming';
-              const oppScore = lowestTopic?.mastery ?? 31;
-              const oppId = (lowestTopic as any)?.topicId || 'oop-basics';
-
-              return (
-                <Card className="p-6 border-red-200 bg-red-50/30">
-                  <div className="flex items-center gap-2 text-danger font-semibold mb-3">
-                    <AlertTriangle className="h-5 w-5" /> Recommended Adaptive Focus
-                  </div>
-                  <h3 className="text-xl font-bold text-dark mb-2">{oppName}</h3>
-                  <p className="text-muted text-sm mb-4">
-                    Bayesian mastery stands at {oppScore}%. Adaptive engine has configured targeted questions with appropriate scaffolding to build mastery efficiently.
-                  </p>
-                  <ProgressBar value={oppScore} colorClass={oppScore < 50 ? 'bg-danger' : 'bg-warning'} className="mb-6" />
-                  <Button variant="danger" className="w-full" onClick={() => navigate(`/practice/quiz?topic=${oppId}`)}>
-                    Start Adaptive Practice
+            {weakestAssessed && (
+              <Card className="p-6 border-red-200 dark:border-red-900/50 bg-red-50/30 dark:bg-red-950/20">
+                <div className="flex items-center gap-2 text-danger font-semibold mb-3">
+                  <AlertTriangle className="h-5 w-5" /> Priority Focus Area
+                </div>
+                <h3 className="text-xl font-bold text-dark mb-1">
+                  {weakestAssessed.topicName}
+                </h3>
+                <p className="text-xs text-muted mb-4 leading-relaxed">
+                  Current mastery is {weakestAssessed.masteryScore}% ({weakestAssessed.confidenceLevel} confidence) across {weakestAssessed.totalAttempts} attempt(s) ({weakestAssessed.correctAnswers} correct, {weakestAssessed.incorrectAnswers} incorrect).
+                </p>
+                <ProgressBar
+                  value={weakestAssessed.masteryScore}
+                  colorClass="bg-danger"
+                  className="mb-5"
+                />
+                <div className="flex flex-col gap-2">
+                  <Button
+                    variant="danger"
+                    className="w-full"
+                    onClick={() =>
+                      navigate(
+                        `/practice/adaptive-quiz?topic=${encodeURIComponent(weakestAssessed.topicId)}&type=follow_up`
+                      )
+                    }
+                  >
+                    Start Adaptive Recovery Quiz
                   </Button>
-                </Card>
-              );
-            })()}
+                  <Button
+                    variant="secondary"
+                    className="w-full"
+                    onClick={() =>
+                      navigate(
+                        `/learn?topic=${encodeURIComponent(weakestAssessed.topicId)}`
+                      )
+                    }
+                  >
+                    Open Adaptive AI Explanation
+                  </Button>
+                </div>
+              </Card>
+            )}
 
-            <ChartCard title="Learning Time (Last 7 Days)">
+            {/* Recurring Mistake Analysis Card (Part A4) */}
+            <Card className="p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-base text-dark">
+                  Recurring Mistake Analysis
+                </h3>
+                {snapshot.mistakePatterns.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => navigate('/practice/mistake-review')}
+                    className="text-xs text-primary font-semibold hover:underline"
+                  >
+                    Review All
+                  </button>
+                )}
+              </div>
+
+              {snapshot.mistakePatterns.length === 0 ? (
+                <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20 text-xs text-muted flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                  <span>
+                    {snapshot.totalAttempts === 0
+                      ? 'No incorrect attempts recorded yet.'
+                      : 'No recurring mistake patterns detected across your recorded attempts.'}
+                  </span>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {snapshot.mistakePatterns.slice(0, 4).map((pattern) => (
+                    <div
+                      key={pattern.id}
+                      className="p-3.5 rounded-xl border border-border bg-gray-50/50 dark:bg-slate-800/40 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-dark">
+                          {pattern.topicName}
+                        </span>
+                        <Badge
+                          variant={pattern.isConfirmedPattern ? 'warning' : 'default'}
+                          className="text-[10px]"
+                        >
+                          {pattern.isConfirmedPattern
+                            ? `${pattern.occurrences} misses`
+                            : 'Single miss'}
+                        </Badge>
+                      </div>
+                      <p className="text-xs font-medium text-dark/90">
+                        {pattern.summary}
+                      </p>
+                      <p className="text-[11px] text-muted">{pattern.evidenceDetail}</p>
+                      <div className="pt-1 flex items-center justify-between text-[11px]">
+                        <span className="text-primary font-medium">
+                          Suggested: {STRATEGY_LABELS[pattern.suggestedStrategy]}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigate(
+                              `/learn?topic=${encodeURIComponent(pattern.topicId)}&strategy=${encodeURIComponent(pattern.suggestedStrategy)}`
+                            )
+                          }
+                          className="font-semibold text-primary hover:underline"
+                        >
+                          Practice Concept →
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <ChartCard title="Completed Question Attempts (Last 7 Days)">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={weeklyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e0f0" />
-                  <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
-                  <Tooltip 
-                    cursor={{ fill: '#f8f7ff' }} 
-                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
+                <BarChart
+                  data={sevenDayData}
+                  margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.15} />
+                  <XAxis
+                    dataKey="day"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 12, fill: '#64748b' }}
+                    dy={10}
                   />
-                  <Bar dataKey="minutes" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                  <YAxis
+                    allowDecimals={false}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 12, fill: '#64748b' }}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'var(--color-surface, #ffffff)',
+                      borderColor: 'var(--color-border, #e2e8f0)',
+                      borderRadius: '12px',
+                      color: 'var(--color-dark, #0f172a)',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Bar
+                    dataKey="attempts"
+                    name="Total Attempts"
+                    fill="#6366f1"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={36}
+                  />
+                  <Bar
+                    dataKey="correct"
+                    name="Correct"
+                    fill="#10b981"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={36}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </ChartCard>
           </div>
         </div>
 
-        <InsightCard 
-          type="behavior"
-          title="Optimal Learning Schedule"
-          description="You learn most efficiently during 30–45 minute sessions. Your accuracy drops by 23% after 45+ minutes. Try shorter, focused sessions."
-          className="w-full"
-        />
+        {/* Recent Attempt Log Table */}
+        {snapshot.recentAttempts.length > 0 && (
+          <Card className="p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg text-dark flex items-center gap-2">
+                <TrendingUp className="h-5 w-5 text-primary" />
+                Recent Question Attempt Audit Log
+              </h3>
+              <span className="text-xs text-muted">
+                Showing latest {Math.min(10, snapshot.recentAttempts.length)} of{' '}
+                {snapshot.totalAttempts} recorded attempts
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-border text-muted uppercase">
+                    <th className="py-2.5 pr-4">Topic</th>
+                    <th className="py-2.5 pr-4">Question</th>
+                    <th className="py-2.5 pr-4">Type</th>
+                    <th className="py-2.5 pr-4">Difficulty</th>
+                    <th className="py-2.5 pr-4">Result</th>
+                    <th className="py-2.5 pr-4">Storage</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {snapshot.recentAttempts.slice(0, 10).map((att) => (
+                    <tr key={att.client_attempt_id || att.id}>
+                      <td className="py-2.5 pr-4 font-semibold text-dark">
+                        {att.topic_name}
+                      </td>
+                      <td className="py-2.5 pr-4 text-muted max-w-xs truncate">
+                        {att.question_text}
+                      </td>
+                      <td className="py-2.5 pr-4 capitalize">
+                        {(att.attempt_type || 'adaptive').replace('_', ' ')}
+                      </td>
+                      <td className="py-2.5 pr-4">Lvl {att.difficulty}/5</td>
+                      <td className="py-2.5 pr-4">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full font-semibold ${
+                            att.is_correct
+                              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-red-500/10 text-red-700 dark:text-red-300'
+                          }`}
+                        >
+                          {att.is_correct ? 'Correct' : 'Incorrect'}
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-4 capitalize text-muted">
+                        {att.persistence_source === 'cloud' ? 'Cloud + Local' : 'Local'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
       </div>
     </AppShell>
   );

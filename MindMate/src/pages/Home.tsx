@@ -1,119 +1,79 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AppShell } from '../components/layout/AppShell';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { StatCard } from '../components/shared/StatCard';
 import { TaskCard } from '../components/shared/TaskCard';
 import { InsightCard } from '../components/shared/InsightCard';
-import { Flame, Target, Zap, ArrowRight, Brain, Check, Calendar, BookOpen } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { learner as mockLearner } from '../data/mockData';
+import { useMastery } from '../hooks/useMastery';
 import { useStudyStreak } from '../hooks/useStudyStreak';
+import { Flame, Target, Zap, ArrowRight, Brain, Check } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAppContext } from '../context/AppContext';
-import { apiClient } from '../services/api/client';
-
-interface LearnerTwinOverview {
-  totalActiveTopics: number;
-  assessedTopicsCount: number;
-  unassessedTopicsCount: number;
-  overallMasteryPct: number;
-  totalQuestionsAnswered: number;
-  totalCorrectAnswers: number;
-  overallAccuracyPct: number;
-  demonstratedStrengthsCount: number;
-  knowledgeGapsCount: number;
-}
-
-interface TopicDetail {
-  topicId: string;
-  topicName: string;
-  isAssessed: boolean;
-  modelEstimates: {
-    masteryScore: number;
-    isSpacedRepetitionDue: boolean;
-  };
-}
-
-interface LearnerTwinProfile {
-  learnerName: string;
-  learningGoal: string;
-  overview: LearnerTwinOverview;
-  topics: TopicDetail[];
-  strengths: TopicDetail[];
-  knowledgeGaps: TopicDetail[];
-  deterministicSummary: string;
-}
-
-interface StudyTask {
-  id: string;
-  title: string;
-  durationMinutes: number;
-  type: string;
-  isCompleted: boolean;
-  actionUrl?: string;
-  recommendationReason?: string;
-}
-
-interface PlannerResponse {
-  todayTasks?: StudyTask[];
-  settings?: {
-    dailyGoalMinutes?: number;
-  };
-}
+import { getProfile, getPlannerTasks } from '../lib/db';
+import { STRATEGY_LABELS } from '../services/adaptive/adaptiveLearningEngine';
 
 export default function Home() {
   const navigate = useNavigate();
   const { user } = useAppContext();
 
-  const {
-    currentStreak,
-    longestStreak,
-    studyDates,
-    recordStudyActivity,
-  } = useStudyStreak();
+  const { snapshot } = useMastery();
+  const { currentStreak, longestStreak, studyDates } = useStudyStreak();
 
-  const [twinProfile, setTwinProfile] = useState<LearnerTwinProfile | null>(null);
-  const [plannerData, setPlannerData] = useState<PlannerResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [profile, setProfile] = useState<any>(null);
+  const [todayTasks, setTodayTasks] = useState<any[]>([]);
 
-  // Load genuine learner twin profile and today's planner tasks from backend
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadLearnerDashboardData() {
-      setIsLoading(true);
+    if (!user) return;
+    async function loadData() {
       try {
-        const [twinRes, plannerRes] = await Promise.allSettled([
-          apiClient<{ success: boolean; profile: LearnerTwinProfile }>('/api/learner/twin'),
-          apiClient<PlannerResponse>('/api/learner/planner'),
+        const [profRes, tasksRes] = await Promise.all([
+          getProfile(user!.id),
+          getPlannerTasks(user!.id),
         ]);
 
-        if (isMounted) {
-          if (twinRes.status === 'fulfilled' && twinRes.value?.success) {
-            setTwinProfile(twinRes.value.profile);
-          }
-          if (plannerRes.status === 'fulfilled') {
-            setPlannerData(plannerRes.value);
-          }
+        if (profRes.data) setProfile(profRes.data);
+
+        if (tasksRes.data && tasksRes.data.length > 0) {
+          const todayWeekday = new Date().toLocaleDateString('en-US', {
+            weekday: 'short',
+          });
+          setTodayTasks(tasksRes.data.filter((t) => t.day === todayWeekday));
         }
       } catch (err) {
-        console.warn('[Home] Failed to load learner dashboard data:', err);
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
+        console.error('Failed to load home data', err);
       }
     }
+    loadData();
+  }, [user]);
 
-    if (user?.id) {
-      loadLearnerDashboardData();
-    } else {
-      setIsLoading(false);
-    }
+  const nextAction = snapshot.nextLearningAction;
+  const assessedTopics = snapshot.topics.filter((t) => t.totalAttempts > 0);
+  const strongestMetric =
+    assessedTopics.length > 0
+      ? [...assessedTopics].sort((a, b) => b.masteryScore - a.masteryScore)[0]
+      : null;
+  const weakestMetric =
+    assessedTopics.length > 0
+      ? [...assessedTopics].sort((a, b) => a.masteryScore - b.masteryScore)[0]
+      : null;
 
-    return () => {
-      isMounted = false;
-    };
-  }, [user?.id]);
+  const displayStreak = currentStreak || profile?.streak || 0;
+  const prefSession = profile?.preferred_session ?? mockLearner.preferredSession;
+
+  const displayTasks =
+    todayTasks.length > 0
+      ? todayTasks
+      : [
+          {
+            name: `${nextAction.nextTopicName} (${nextAction.suggestedActivity.replace(/-/g, ' ')})`,
+            duration: '10 min',
+            type: 'practice',
+          },
+          { name: 'Quick Recall Review', duration: '5 min', type: 'review' },
+          { name: 'Mistake Recovery Check', duration: '10 min', type: 'quiz' },
+        ];
 
   const today = new Date();
   const todayKey = [
@@ -122,13 +82,10 @@ export default function Home() {
     String(today.getDate()).padStart(2, '0'),
   ].join('-');
 
-  const studiedToday = studyDates.includes(todayKey);
-
   const weekDays = Array.from({ length: 7 }, (_, index) => {
     const date = new Date();
     const dayOfWeek = date.getDay();
     const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-
     date.setDate(date.getDate() + mondayOffset + index);
 
     const key = [
@@ -146,69 +103,55 @@ export default function Home() {
     };
   });
 
-  // Derive authentic next best action based on the learner's actual data
-  const assessedCount = twinProfile?.overview?.assessedTopicsCount ?? 0;
-  const questionsCount = twinProfile?.overview?.totalQuestionsAnswered ?? 0;
-  const knowledgeGaps = twinProfile?.knowledgeGaps ?? [];
-  const strengths = twinProfile?.strengths ?? [];
-  const overdueTopic = twinProfile?.topics?.find((t) => t.modelEstimates?.isSpacedRepetitionDue);
-
-  let nextActionTitle = 'Start Initial Diagnostic';
-  let nextActionDesc = 'Complete your first diagnostic practice session to establish baseline ability ratings and calibrate your Learning Twin.';
-  let nextActionUrl = '/practice/quiz';
-
-  if (knowledgeGaps.length > 0) {
-    const gap = knowledgeGaps[0];
-    nextActionTitle = `Targeted Remediation: ${gap.topicName}`;
-    nextActionDesc = `Your estimated mastery is currently at ${gap.modelEstimates.masteryScore}%. Focused adaptive practice will reinforce core concepts.`;
-    nextActionUrl = `/practice/quiz?topic=${gap.topicId}`;
-  } else if (overdueTopic) {
-    nextActionTitle = `Retention Review: ${overdueTopic.topicName}`;
-    nextActionDesc = 'Spaced repetition review is due to prevent memory decay. Review now to consolidate long-term retention.';
-    nextActionUrl = `/practice/quiz?topic=${overdueTopic.topicId}`;
-  } else if (strengths.length > 0) {
-    const strong = strengths[0];
-    nextActionTitle = `Advanced Challenge: ${strong.topicName}`;
-    nextActionDesc = `Strong foundation demonstrated (${strong.modelEstimates.masteryScore}% mastery). Advance to hard problems to deepen mastery.`;
-    nextActionUrl = `/practice/quiz?topic=${strong.topicId}`;
-  } else if (assessedCount > 0) {
-    nextActionTitle = 'Continue Adaptive Practice';
-    nextActionDesc = 'Engage in adaptive question practice tailored to your current proficiency.';
-    nextActionUrl = '/practice/quiz';
-  }
-
-  const todayTasks = plannerData?.todayTasks || [];
-
   return (
     <AppShell
       pageTitle={`Welcome back, ${user?.name || 'Learner'}!`}
-      pageSubtitle="Ready to continue mastering Computer Science?"
+      pageSubtitle="Adaptive learning engine and live assessment analytics"
     >
-      <div className="max-w-5xl space-y-8">
-        {/* Next Best Action Banner */}
-        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-700 p-8 text-white shadow-lg">
-          <div className="relative z-10 md:w-2/3">
-            <div className="mb-4 inline-flex items-center rounded-full bg-white/20 px-3 py-1 text-sm font-medium backdrop-blur-sm">
+      <div className="space-y-8 max-w-5xl">
+        {/* Next Best Action Hero Card (Driven by AdaptiveLearningEngine) */}
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-700 text-white p-8 shadow-lg">
+          <div className="relative z-10 md:w-3/4">
+            <div className="inline-flex items-center rounded-full bg-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-wider backdrop-blur-sm mb-4">
               <Zap className="mr-2 h-4 w-4 text-yellow-300" />
-              Next Best Action
+              Adaptive Next Best Action • {nextAction.suggestedActivity.replace(/-/g, ' ')}
             </div>
-            <h2 className="mb-2 text-3xl font-bold">{nextActionTitle}</h2>
-            <p className="mb-6 text-lg text-indigo-100">{nextActionDesc}</p>
+            <h2 className="text-3xl font-bold mb-2">{nextAction.nextTopicName}</h2>
+            <p className="text-indigo-100 mb-3 text-base leading-relaxed">
+              {nextAction.reason}
+            </p>
+            <p className="text-indigo-200 text-xs mb-6">
+              Strategy: <strong>{STRATEGY_LABELS[nextAction.explanationStrategy]}</strong> •{' '}
+              Suggested Difficulty:{' '}
+              <strong>
+                {nextAction.suggestedDifficulty.toUpperCase()} (Level{' '}
+                {nextAction.suggestedDifficultyLevel}/5)
+              </strong>{' '}
+              • Evidence: {nextAction.supportingEvidence.detail}
+            </p>
             <div className="flex flex-wrap gap-4">
               <Button
                 size="lg"
-                className="bg-white text-indigo-600 hover:bg-indigo-50 font-semibold"
-                onClick={() => navigate(nextActionUrl)}
+                className="bg-white text-indigo-600 hover:bg-indigo-50 font-medium"
+                onClick={() =>
+                  navigate(
+                    `/practice/adaptive-quiz?topic=${encodeURIComponent(nextAction.nextTopicId)}&type=${nextAction.suggestedActivity === 'diagnostic-quiz' ? 'diagnostic' : 'follow_up'}&difficulty=${nextAction.suggestedDifficultyLevel}`
+                  )
+                }
               >
-                Start Practice <ArrowRight className="ml-2 h-5 w-5" />
+                Start Recommended Quiz <ArrowRight className="ml-2 h-5 w-5" />
               </Button>
               <Button
                 size="lg"
                 variant="ghost"
-                className="border border-white/20 text-white hover:bg-white/10 hover:text-white"
-                onClick={() => navigate('/learn')}
+                className="text-white hover:bg-white/10 hover:text-white border-white/20 border"
+                onClick={() =>
+                  navigate(
+                    `/learn?topic=${encodeURIComponent(nextAction.nextTopicId)}&strategy=${encodeURIComponent(nextAction.explanationStrategy)}`
+                  )
+                }
               >
-                Ask AI Tutor
+                Open Adaptive Lesson
               </Button>
             </div>
           </div>
@@ -217,218 +160,163 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Real Metrics Cards */}
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+        {/* Stats Row */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <StatCard
             title="Current Streak"
-            value={`${currentStreak} ${currentStreak === 1 ? 'Day' : 'Days'}`}
+            value={`${displayStreak} Day${displayStreak === 1 ? '' : 's'}`}
             icon={Flame}
             colorClass="text-orange-500"
-            subtitle={studiedToday ? 'Study recorded today' : 'No activity yet today'}
+            subtitle="Recorded study days"
           />
           <StatCard
-            title="Overall Mastery"
-            value={assessedCount > 0 ? `${twinProfile?.overview?.overallMasteryPct}%` : '—'}
+            title="Assessed Mastery"
+            value={
+              snapshot.assessedTopicsCount > 0
+                ? `${snapshot.averageMastery}%`
+                : 'Unassessed'
+            }
             icon={Target}
             colorClass="text-indigo-500"
-            subtitle={
-              assessedCount > 0
-                ? `${assessedCount} assessed topic${assessedCount === 1 ? '' : 's'}`
-                : 'Complete a quiz to evaluate'
-            }
+            subtitle={`${snapshot.assessedTopicsCount}/${snapshot.totalTopicsCount} topics (${snapshot.totalAttempts} attempts)`}
           />
           <StatCard
-            title="Study Accuracy"
-            value={questionsCount > 0 ? `${twinProfile?.overview?.overallAccuracyPct}%` : '—'}
+            title="Recent Accuracy"
+            value={
+              snapshot.totalAttempts > 0 ? `${snapshot.recentAccuracy}%` : '—'
+            }
             icon={Zap}
             colorClass="text-yellow-500"
             subtitle={
-              questionsCount > 0
-                ? `${twinProfile?.overview?.totalCorrectAnswers}/${questionsCount} correct answers`
-                : 'No practice history'
+              snapshot.totalAttempts > 0
+                ? `${snapshot.totalCorrect}/${snapshot.totalAttempts} overall correct`
+                : 'Complete a quiz to measure accuracy'
             }
           />
         </div>
 
-        {/* Study Streak Card */}
-        <Card className="space-y-5 p-6">
+        {/* Study Streak Calendar Widget */}
+        <Card className="space-y-5 p-6 border border-border shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="flex items-center gap-2 text-xl font-bold">
+              <h3 className="flex items-center gap-2 text-xl font-bold text-dark">
                 <Flame className="h-5 w-5 text-orange-500" />
                 Your Study Streak
               </h3>
               <p className="mt-1 text-sm text-muted">
-                Every study day builds your long-term learning habit.
+                Every study day helps build your learning habit.
               </p>
             </div>
-            <div className="rounded-xl bg-orange-50 px-4 py-2 text-right">
-              <p className="text-xs font-medium text-orange-700">Personal best</p>
-              <p className="text-2xl font-bold text-orange-600">
-                {longestStreak} {longestStreak === 1 ? 'day' : 'days'}
+            <div className="rounded-xl bg-orange-50 dark:bg-orange-950/40 px-4 py-2 text-right border border-orange-100 dark:border-orange-900">
+              <p className="text-xs font-medium text-orange-700 dark:text-orange-300">
+                Personal best
+              </p>
+              <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">
+                {longestStreak || displayStreak} days
               </p>
             </div>
           </div>
 
-          <div className="grid grid-cols-7 gap-2">
+          <div className="grid grid-cols-7 gap-2 pt-2">
             {weekDays.map((day) => (
               <div key={day.key} className="flex flex-col items-center gap-2">
-                <span className="text-xs text-muted">{day.label}</span>
+                <span className="text-xs font-medium text-muted">{day.label}</span>
                 <div
-                  className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold ${
+                  className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold transition-all ${
                     day.studied
                       ? 'bg-orange-500 text-white shadow-sm'
                       : day.isToday
-                        ? 'border-2 border-orange-400 text-orange-600 bg-orange-50/30'
-                        : 'bg-gray-100 text-gray-500'
+                        ? 'border-2 border-orange-400 text-orange-600 bg-orange-50/50'
+                        : 'bg-gray-100 dark:bg-slate-800 text-gray-500'
                   }`}
-                  title={day.studied ? 'Study activity completed' : 'No study activity recorded'}
+                  title={
+                    day.studied
+                      ? 'Study activity completed'
+                      : 'No study activity recorded'
+                  }
                 >
                   {day.studied ? <Check className="h-4 w-4" /> : day.number}
                 </div>
                 {day.isToday && (
-                  <span className="text-xs font-medium text-orange-600">
+                  <span className="text-xs font-semibold text-orange-600">
                     Today
                   </span>
                 )}
               </div>
             ))}
           </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-            <p className="text-sm text-muted">
-              {studiedToday
-                ? "Today's study activity is recorded. Great work!"
-                : 'Complete a quiz or log study to keep your streak alive.'}
-            </p>
-            <Button
-              onClick={recordStudyActivity}
-              disabled={studiedToday}
-              variant={studiedToday ? 'secondary' : 'primary'}
-            >
-              {studiedToday ? 'Today Completed' : 'Record Today’s Study'}
-            </Button>
-          </div>
         </Card>
 
-        {/* Today's Plan & Twin Snapshot */}
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-          <div className="space-y-4 lg:col-span-2">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xl font-bold flex items-center gap-2">
-                <Calendar className="h-5 w-5 text-indigo-600" />
-                Today's Plan
-              </h3>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-primary hover:text-primary-hover"
-                onClick={() => navigate('/planner')}
-              >
-                View Full Planner <ArrowRight className="ml-1 h-4 w-4" />
-              </Button>
-            </div>
-
+        {/* Today's Plan and Twin Snapshot */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2 space-y-4">
+            <h3 className="text-xl font-bold text-dark">Today's Adaptive Plan</h3>
             <Card className="p-6">
-              {todayTasks.length > 0 ? (
-                <div className="space-y-3">
-                  {todayTasks.map((task) => (
-                    <TaskCard
-                      key={task.id}
-                      id={task.id}
-                      name={task.title}
-                      duration={`${task.durationMinutes} min`}
-                      type={task.type}
-                      isDone={task.isCompleted}
-                      actionUrl={task.actionUrl}
-                      recommendationReason={task.recommendationReason}
-                      onStart={(url) => navigate(url || '/practice/quiz')}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="py-8 text-center">
-                  <BookOpen className="mx-auto h-10 w-10 text-gray-300 mb-2" />
-                  <p className="font-semibold text-dark/80">No scheduled tasks for today</p>
-                  <p className="mt-1 text-sm text-muted max-w-sm mx-auto">
-                    Generate an adaptive study schedule in the Planner or start a practice session to build your plan.
-                  </p>
-                  <div className="mt-4 flex justify-center gap-3">
-                    <Button size="sm" onClick={() => navigate('/planner')}>
-                      Open Study Planner
-                    </Button>
-                    <Button size="sm" variant="secondary" onClick={() => navigate('/practice/quiz')}>
-                      Start Quiz
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <div className="space-y-4">
+                {displayTasks.map((t, i) => (
+                  <TaskCard
+                    key={t.id || i}
+                    id={t.id}
+                    name={t.name}
+                    duration={t.duration}
+                    type={t.type as any}
+                    isDone={t.completed}
+                    activityCompleted={t.activity_completed}
+                    onStartPractice={() =>
+                      navigate(
+                        `/practice/adaptive-quiz?topic=${encodeURIComponent(nextAction.nextTopicId)}`
+                      )
+                    }
+                  />
+                ))}
+              </div>
             </Card>
 
             <InsightCard
               type="info"
-              title="Personalized Pacing"
-              description={
-                twinProfile?.deterministicSummary ||
-                'Complete diagnostic quizzes and practice sessions to receive evidence-based insights tailored to your learning profile.'
-              }
+              title={`Selected Strategy: ${STRATEGY_LABELS[nextAction.explanationStrategy]}`}
+              description={nextAction.strategyReason}
               className="mt-6"
             />
           </div>
 
-          {/* Twin Snapshot */}
           <div className="space-y-4">
-            <h3 className="text-xl font-bold flex items-center gap-2">
-              <Brain className="h-5 w-5 text-indigo-600" />
-              Twin Snapshot
-            </h3>
+            <h3 className="text-xl font-bold text-dark">Twin Snapshot</h3>
             <Card className="p-6">
               <div className="space-y-6">
                 <div>
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">
-                    Strongest Topic
+                  <p className="text-xs text-muted font-semibold uppercase tracking-wider mb-1">
+                    Strongest Assessed Topic
                   </p>
-                  <p className="font-medium text-dark text-base">
-                    {strengths[0]?.topicName ||
-                      (assessedCount > 0 ? 'Equally Balanced' : 'No assessed topics yet')}
+                  <p className="font-medium text-dark">
+                    {strongestMetric
+                      ? `${strongestMetric.topicName} (${strongestMetric.masteryScore}%)`
+                      : 'No topics assessed yet'}
                   </p>
-                  {strengths[0] && (
-                    <p className="text-xs text-emerald-600 font-medium mt-0.5">
-                      {strengths[0].modelEstimates.masteryScore}% estimated mastery
-                    </p>
-                  )}
                 </div>
-
                 <div>
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">
+                  <p className="text-xs text-muted font-semibold uppercase tracking-wider mb-1">
                     Needs Focus
                   </p>
-                  <p className={`font-medium text-base ${knowledgeGaps.length > 0 ? 'text-danger' : 'text-dark'}`}>
-                    {knowledgeGaps[0]?.topicName ||
-                      (assessedCount > 0 ? 'All assessed topics proficient' : 'No gaps identified yet')}
+                  <p className="font-medium text-danger">
+                    {weakestMetric
+                      ? `${weakestMetric.topicName} (${weakestMetric.masteryScore}%)`
+                      : nextAction.nextTopicName}
                   </p>
-                  {knowledgeGaps[0] && (
-                    <p className="text-xs text-rose-500 font-medium mt-0.5">
-                      {knowledgeGaps[0].modelEstimates.masteryScore}% mastery (Needs practice)
-                    </p>
-                  )}
                 </div>
-
                 <div>
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">
-                    Learning Goal
+                  <p className="text-xs text-muted font-semibold uppercase tracking-wider mb-1">
+                    Preferred Session
                   </p>
-                  <p className="font-medium text-dark text-base">
-                    {twinProfile?.learningGoal || user?.goal || 'Master Computer Science'}
-                  </p>
+                  <p className="font-medium text-dark">{prefSession}</p>
                 </div>
 
                 <Button
                   variant="secondary"
-                  className="mt-4 w-full"
+                  className="w-full mt-4"
                   onClick={() => navigate('/learning-twin')}
                 >
-                  View Full Learning Twin
+                  View Full Twin
                 </Button>
               </div>
             </Card>

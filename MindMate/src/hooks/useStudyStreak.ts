@@ -1,14 +1,13 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { useAppContext } from '../context/AppContext';
-import { apiClient } from '../services/api/client';
-import { syncQueue } from '../services/storage/syncQueue';
+import { useEffect, useState } from 'react';
 
-export type StudyStreak = {
+type StudyStreak = {
   currentStreak: number;
   longestStreak: number;
   studyDates: string[];
   lastStudyDate: string | null;
 };
+
+const STORAGE_KEY = 'mindmate-study-streak';
 
 function getToday(): string {
   const now = new Date();
@@ -27,15 +26,9 @@ function getYesterday(): string {
   return `${year}-${month}-${day}`;
 }
 
-function getStorageKey(userId?: string | null): string {
-  return `mindmate-study-streak:${userId || 'guest'}`;
-}
-
-function loadLocalStreak(userId?: string | null): StudyStreak {
+function loadStreak(): StudyStreak {
   try {
-    const key = getStorageKey(userId);
-    const saved = localStorage.getItem(key);
-
+    const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved) as StudyStreak;
       if (
@@ -45,19 +38,14 @@ function loadLocalStreak(userId?: string | null): StudyStreak {
       ) {
         const today = getToday();
         const yesterday = getYesterday();
-
-        if (
-          parsed.lastStudyDate !== today &&
-          parsed.lastStudyDate !== yesterday
-        ) {
+        if (parsed.lastStudyDate !== today && parsed.lastStudyDate !== yesterday) {
           parsed.currentStreak = 0;
         }
-
         return parsed;
       }
     }
   } catch {
-    // Start fresh if saved data is invalid.
+    // Start fresh on parsing failure
   }
 
   return {
@@ -69,63 +57,15 @@ function loadLocalStreak(userId?: string | null): StudyStreak {
 }
 
 export function useStudyStreak() {
-  const { user, isOnline } = useAppContext();
-  const userId = user?.id;
+  const [streak, setStreak] = useState<StudyStreak>(loadStreak);
 
-  const [streak, setStreak] = useState<StudyStreak>(() => loadLocalStreak(userId));
-  const prevUserIdRef = useRef<string | undefined>(userId);
-
-  // When user switches or logs in/out, re-load that user's cached streak
   useEffect(() => {
-    if (prevUserIdRef.current !== userId) {
-      prevUserIdRef.current = userId;
-      setStreak(loadLocalStreak(userId));
-    }
-  }, [userId]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(streak));
+  }, [streak]);
 
-  // Sync with backend when authenticated and online
-  useEffect(() => {
-    let isCancelled = false;
-
-    async function fetchServerStreak() {
-      if (!userId || !isOnline) return;
-
-      try {
-        const res = await apiClient<{
-          success: boolean;
-          currentStreak: number;
-          longestStreak: number;
-          studyDates: string[];
-          lastStudyDate: string | null;
-        }>('/api/learner/streak');
-
-        if (!isCancelled && res.success) {
-          const updated: StudyStreak = {
-            currentStreak: res.currentStreak,
-            longestStreak: res.longestStreak,
-            studyDates: res.studyDates || [],
-            lastStudyDate: res.lastStudyDate,
-          };
-          setStreak(updated);
-          localStorage.setItem(getStorageKey(userId), JSON.stringify(updated));
-        }
-      } catch (err) {
-        // Fall back gracefully to local storage
-        console.warn('[useStudyStreak] Server fetch failed, keeping local streak:', err);
-      }
-    }
-
-    fetchServerStreak();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [userId, isOnline]);
-
-  const recordStudyActivity = useCallback(async () => {
-    const today = getToday();
-
+  function recordStudyActivity() {
     setStreak((previous) => {
+      const today = getToday();
       if (previous.lastStudyDate === today) {
         return previous;
       }
@@ -141,40 +81,10 @@ export function useStudyStreak() {
         lastStudyDate: today,
       };
 
-      localStorage.setItem(getStorageKey(userId), JSON.stringify(updated));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
       return updated;
     });
-
-    // Server-side persistence or offline queue
-    if (userId) {
-      if (isOnline) {
-        try {
-          await apiClient('/api/learner/streak/record', {
-            method: 'POST',
-            body: JSON.stringify({ date: today }),
-          });
-        } catch (err) {
-          console.warn('[useStudyStreak] Server record failed, queueing for sync:', err);
-          const clientEventId = `streak_${userId}_${today}`;
-          await syncQueue.enqueue(
-            userId,
-            'STUDY_ACTIVITY',
-            { date: today },
-            clientEventId
-          );
-        }
-      } else {
-        // Queue for background synchronization on reconnection
-        const clientEventId = `streak_${userId}_${today}`;
-        await syncQueue.enqueue(
-          userId,
-          'STUDY_ACTIVITY',
-          { date: today },
-          clientEventId
-        );
-      }
-    }
-  }, [userId, isOnline]);
+  }
 
   return {
     currentStreak: streak.currentStreak,

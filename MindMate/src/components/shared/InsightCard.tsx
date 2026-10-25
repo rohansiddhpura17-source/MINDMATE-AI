@@ -22,13 +22,13 @@ export function InsightCard({ type, title, description, action, onAction, classN
       default: return Zap;
     }
   };
-  
+
   const getColorClasses = () => {
     switch (type) {
-      case 'mistake': return 'text-warning bg-yellow-50 border-yellow-200';
-      case 'behavior': return 'text-danger bg-red-50 border-red-200';
-      case 'mastery': return 'text-success bg-green-50 border-green-200';
-      default: return 'text-primary bg-indigo-50 border-indigo-200';
+      case 'mistake': return 'text-warning bg-yellow-50 dark:bg-yellow-950/30 border-yellow-200 dark:border-yellow-800/40';
+      case 'behavior': return 'text-danger bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/40';
+      case 'mastery': return 'text-success bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800/40';
+      default: return 'text-primary bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-800/40';
     }
   };
 
@@ -44,7 +44,7 @@ export function InsightCard({ type, title, description, action, onAction, classN
         <h4 className="font-semibold text-dark mb-1">{title}</h4>
         <p className="text-sm text-dark/80 mb-3">{description}</p>
         {action && onAction && (
-          <Button variant="secondary" size="sm" onClick={onAction} className="bg-white hover:bg-gray-50 text-xs">
+          <Button variant="secondary" size="sm" onClick={onAction} className="bg-surface hover:bg-gray-50 dark:hover:bg-slate-800 text-dark border border-border text-xs">
             {action}
           </Button>
         )}

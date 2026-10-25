@@ -48,6 +48,8 @@ storage/
 
 # System & editor metadata
 .DS_Store
+._*
+**/._*
 Thumbs.db
 *.log
 npm-debug.log*

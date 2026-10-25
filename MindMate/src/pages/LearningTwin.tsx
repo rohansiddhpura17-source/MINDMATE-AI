@@ -1,522 +1,241 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
 import { AppShell } from '../components/layout/AppShell';
+import { LearningTwinCard } from '../components/shared/LearningTwinCard';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Modal } from '../components/ui/Modal';
-import { ProgressBar } from '../components/ui/ProgressBar';
-import {
-  Brain,
-  Sparkles,
-  Target,
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
-  ArrowRight,
-  RefreshCw,
-  Loader2,
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  HelpCircle,
-  ShieldCheck,
-  Zap,
-  BookOpen,
-  Settings,
-  Layers,
-  Database,
-  Calendar,
-} from 'lucide-react';
+import { Brain, BookOpen, Target, Sparkles, Settings, LineChart, Zap, Clock } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
-import {
-  learnerApi,
-  LearnerTwinProfile,
-  TopicTwinDetail,
-  TwinSynthesisResult,
-} from '../services/api/learnerApi';
-import { offlineLearner } from '../services/storage/offlineLearner';
+import { getProfile, updateProfile } from '../lib/db';
+import { useMastery } from '../hooks/useMastery';
+import { STRATEGY_LABELS } from '../services/adaptive/adaptiveLearningEngine';
 
 export default function LearningTwin() {
-  const navigate = useNavigate();
-  const { user, isOnline, showToast } = useAppContext();
+  const { user } = useAppContext();
+  const { snapshot } = useMastery();
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const [profile, setProfile] = useState<LearnerTwinProfile | null>(null);
-  const [synthesis, setSynthesis] = useState<TwinSynthesisResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [isSynthesizing, setIsSynthesizing] = useState(false);
-  const [isOfflineCached, setIsOfflineCached] = useState(false);
-  const [activeTab, setActiveTab] = useState<'topics' | 'strengths' | 'gaps' | 'calibration'>('topics');
-  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
-
-  // Settings form state
-  const [preferredStyle, setPreferredStyle] = useState('visual');
-  const [sessionLength, setSessionLength] = useState(15);
-
-  const loadTwin = async () => {
-    setLoading(true);
-
-    // 1. Load from IndexedDB cache first for instant render
-    if (user?.id) {
-      try {
-        const cached = await offlineLearner.getCachedTwinProfile(user.id);
-        if (cached) {
-          setProfile(cached);
-          setIsOfflineCached(true);
-        }
-      } catch (err) {
-        console.warn('[Cached Twin Read Error]', err);
-      }
-    }
-
-    // 2. Fetch fresh live profile from backend if online
-    if (isOnline) {
-      try {
-        const res = await learnerApi.getLearnerTwin();
-        if (res && res.success) {
-          setProfile(res.profile);
-          setIsOfflineCached(false);
-          if (user?.id) {
-            await offlineLearner.cacheTwinProfile(user.id, res.profile);
-          }
-        }
-      } catch (err) {
-        console.warn('[Fetch Live Twin Error]', err);
-      }
-    }
-
-    setLoading(false);
-  };
+  const [profile, setProfile] = useState<any>(null);
+  const [formStyle, setFormStyle] = useState('Examples first');
+  const [formSession, setFormSession] = useState('30-45 min');
 
   useEffect(() => {
-    loadTwin();
-  }, [user?.id, isOnline]);
-
-  const handleSynthesize = async () => {
-    setIsSynthesizing(true);
-    try {
-      const res = await learnerApi.synthesizeTwin(isOnline);
-      if (res && res.success) {
-        setSynthesis(res.synthesis);
-        showToast('Cognitive coaching analysis updated.', 'success');
+    if (!user) return;
+    async function loadData() {
+      try {
+        const profRes = await getProfile(user!.id);
+        if (profRes.data) {
+          setProfile(profRes.data);
+          setFormStyle(profRes.data.learning_style || 'Examples first');
+          setFormSession(profRes.data.preferred_session || '30-45 min');
+        }
+      } catch (err) {
+        console.error(err);
       }
-    } catch (err: any) {
-      showToast(err?.message || 'Failed to synthesize profile', 'error');
-    } finally {
-      setIsSynthesizing(false);
+    }
+    loadData();
+  }, [user]);
+
+  const handleSave = async () => {
+    if (!user) return;
+    try {
+      await updateProfile(user.id, {
+        learning_style: formStyle,
+        preferred_session: formSession
+      });
+      setProfile({ ...profile, learning_style: formStyle, preferred_session: formSession });
+      setIsModalOpen(false);
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const getConfidenceBadge = (level: string) => {
-    switch (level) {
-      case 'HIGH':
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">High Confidence</span>;
-      case 'MEDIUM':
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-blue-100 text-blue-800 border border-blue-200">Medium Confidence</span>;
-      case 'LOW':
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800 border border-amber-200">Preliminary Estimate</span>;
-      default:
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-gray-100 text-gray-700 border border-gray-200">Calibrating</span>;
-    }
-  };
+  const assessedMetrics = snapshot
+    ? [...snapshot.topics].filter((t) => t.totalAttempts > 0).sort((a, b) => b.masteryScore - a.masteryScore)
+    : [];
+  const masteredCount = assessedMetrics.filter((t) => t.status === 'mastered' || t.status === 'strong').length;
+  const developingCount = assessedMetrics.filter((t) => t.status === 'developing').length;
+  const mastery = snapshot ? snapshot.averageMastery : (profile?.overall_mastery ?? 0);
+  const learningStyle = profile?.learning_style ?? 'Examples first';
+  const preferredSession = profile?.preferred_session ?? '30-45 min';
 
-  const getStatusBadge = (status: string, isAssessed: boolean) => {
-    if (!isAssessed) {
-      return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-gray-100 text-gray-600 border border-gray-200">Not Yet Assessed</span>;
-    }
-    switch (status) {
-      case 'MASTERED':
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-purple-100 text-purple-800 border border-purple-200">Mastered</span>;
-      case 'PROFICIENT':
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">Proficient</span>;
-      case 'DEVELOPING':
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-blue-100 text-blue-800 border border-blue-200">Developing</span>;
-      case 'NEEDS_PRACTICE':
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800 border border-amber-200">Needs Practice</span>;
-      default:
-        return <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">Calibrating</span>;
-    }
-  };
+  const strongestMetric = assessedMetrics.length > 0 ? assessedMetrics[0] : null;
+  const weakestMetric = assessedMetrics.length > 0 ? assessedMetrics[assessedMetrics.length - 1] : null;
+  const activeStrategyLabel = snapshot?.nextLearningAction
+    ? STRATEGY_LABELS[snapshot.nextLearningAction.explanationStrategy]
+    : 'Step-by-Step Breakdown';
 
-  const getTrendIcon = (trend: TopicTwinDetail['trend']) => {
-    switch (trend.direction) {
-      case 'IMPROVING':
-        return (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-            <TrendingUp className="h-3 w-3" /> +{trend.deltaScore}% Trend
-          </span>
-        );
-      case 'DECLINING':
-        return (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
-            <TrendingDown className="h-3 w-3" /> {trend.deltaScore}% Trend
-          </span>
-        );
-      case 'STABLE':
-        return (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-gray-600 bg-gray-50 px-2 py-0.5 rounded-full">
-            <Minus className="h-3 w-3" /> Stable
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 text-xs font-medium text-gray-400">
-            <HelpCircle className="h-3 w-3" /> Needs data
-          </span>
-        );
-    }
-  };
+  const knowledgeGraphItems = assessedMetrics.length > 0
+    ? [
+        `Average Mastery: ${mastery}% (${snapshot?.assessedTopicsCount ?? 0} topic(s) assessed)`,
+        strongestMetric
+          ? `Strongest foundation: ${strongestMetric.topicName} (${strongestMetric.masteryScore}%, ${strongestMetric.confidenceLevel} confidence)`
+          : 'No strongest topic recorded yet',
+        `Strong/Mastered: ${masteredCount} · Developing: ${developingCount}`,
+        weakestMetric
+          ? `Primary focus: ${weakestMetric.topicName} (${weakestMetric.masteryScore}%)`
+          : 'No focus gaps recorded yet',
+      ]
+    : [
+        'Average Mastery: 0% (No quiz attempts recorded yet)',
+        'Complete a diagnostic quiz to map topic foundations',
+        'Topic mastery uses recency + difficulty weighting',
+        'No gaps identified until assessment evidence exists',
+      ];
+
+  const strengthItems = snapshot && snapshot.totalAttempts > 0
+    ? [
+        `Overall Accuracy: ${snapshot.overallAccuracy}% (${snapshot.totalCorrect}/${snapshot.totalAttempts} correct)`,
+        `Recent Window Accuracy: ${snapshot.recentAccuracy}%`,
+        strongestMetric
+          ? `Highest topic score: ${strongestMetric.topicName} (${strongestMetric.masteryScore}%)`
+          : 'Building initial topic baseline',
+        `Active Teaching Strategy: ${activeStrategyLabel}`,
+      ]
+    : [
+        'No accuracy baseline recorded yet',
+        'Take a quiz to measure recent vs overall accuracy',
+        'Tracks performance across Easy, Medium, and Hard difficulty',
+        `Default Teaching Strategy: ${activeStrategyLabel}`,
+      ];
+
+  const struggleItems = snapshot && snapshot.mistakePatterns.length > 0
+    ? snapshot.mistakePatterns.slice(0, 4).map((m) => m.summary)
+    : snapshot && snapshot.totalAttempts > 0
+    ? [
+        'Zero wrong answers recorded across your completed attempts',
+        'Continue practicing higher difficulty levels to test edge cases',
+      ]
+    : [
+        'No mistake patterns recorded yet',
+        'Wrong answers are grouped by topic, concept tag, and prerequisite',
+        'Never diagnoses a misconception from a single isolated error',
+      ];
 
   return (
-    <AppShell pageTitle="Learning Twin" pageSubtitle="Your evidence-based cognitive model & AI synthesis">
-      <div className="max-w-6xl space-y-8 pb-12">
-        {/* TOP COGNITIVE BANNER */}
-        <Card className="p-6 bg-gradient-to-br from-indigo-50/60 via-white to-purple-50/40 border-primary/20 shadow-sm relative overflow-hidden">
-          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative z-10">
-            <div className="flex items-center gap-4">
-              <div className="relative">
-                <div className="absolute inset-0 bg-primary/25 blur-lg rounded-full" />
-                <div className="h-16 w-16 bg-white border-2 border-primary text-primary rounded-2xl flex items-center justify-center relative z-10 shadow-md">
-                  <Brain className="h-9 w-9 stroke-[2.2]" />
-                </div>
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-bold text-dark">{profile?.learnerName || user?.name || 'Learner'}'s Cognitive Twin</h2>
-                  {isOfflineCached && (
-                    <span className="text-[10px] bg-amber-100 text-amber-800 font-semibold px-2 py-0.5 rounded-full border border-amber-200">
-                      Offline Cached
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-muted mt-0.5">
-                  Target Goal: <span className="font-semibold text-dark">{profile?.learningGoal || 'Master Full-Stack & Python Development'}</span>
-                  {profile?.overview.lastCalibratedAt && (
-                    <span> • Calibrated {new Date(profile.overview.lastCalibratedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                  )}
-                </p>
+    <AppShell pageTitle="Learning Twin" pageSubtitle="Your personalized cognitive model">
+      <div className="max-w-5xl space-y-12">
+
+        {/* Core Layout */}
+        <div className="relative">
+          {/* Center Brain Icon */}
+          <div className="flex flex-col items-center justify-center mb-8">
+            <div className="relative">
+              <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full" />
+              <div className="h-24 w-24 bg-surface border-4 border-primary text-primary rounded-full flex items-center justify-center relative z-10 shadow-lg">
+                <Brain className="h-12 w-12" />
               </div>
             </div>
-
-            <div className="flex items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={loadTwin} disabled={loading} className="text-xs">
-                <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loading ? 'animate-spin' : ''}`} /> Refresh Model
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setIsSettingsModalOpen(true)} className="text-xs text-muted hover:text-dark">
-                <Settings className="h-3.5 w-3.5 mr-1.5" /> Preferences
-              </Button>
-            </div>
-          </div>
-
-          {/* Core Overview Metrics Strip */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mt-6 pt-6 border-t border-indigo-100/60">
-            <div className="p-3 bg-white/80 rounded-xl border border-gray-100 shadow-2xs">
-              <p className="text-[11px] font-medium text-muted">Overall Mastery</p>
-              <p className="text-xl font-bold text-primary mt-0.5">{profile?.overview.overallMasteryPct ?? 0}%</p>
-              <p className="text-[10px] text-muted">Bayesian posterior</p>
-            </div>
-
-            <div className="p-3 bg-white/80 rounded-xl border border-gray-100 shadow-2xs">
-              <p className="text-[11px] font-medium text-muted">Empirical Accuracy</p>
-              <p className="text-xl font-bold text-emerald-600 mt-0.5">{profile?.overview.overallAccuracyPct ?? 0}%</p>
-              <p className="text-[10px] text-muted">{profile?.overview.totalCorrectAnswers ?? 0} / {profile?.overview.totalQuestionsAnswered ?? 0} correct</p>
-            </div>
-
-            <div className="p-3 bg-white/80 rounded-xl border border-gray-100 shadow-2xs">
-              <p className="text-[11px] font-medium text-muted">Assessed Topics</p>
-              <p className="text-xl font-bold text-dark mt-0.5">{profile?.overview.assessedTopicsCount ?? 0} / {profile?.overview.totalActiveTopics ?? 0}</p>
-              <p className="text-[10px] text-muted">{profile?.overview.unassessedTopicsCount ?? 0} unassessed</p>
-            </div>
-
-            <div className="p-3 bg-white/80 rounded-xl border border-gray-100 shadow-2xs">
-              <p className="text-[11px] font-medium text-muted">Strong Concepts</p>
-              <p className="text-xl font-bold text-purple-600 mt-0.5">{profile?.overview.demonstratedStrengthsCount ?? 0}</p>
-              <p className="text-[10px] text-muted">≥75% mastery</p>
-            </div>
-
-            <div className="p-3 bg-white/80 rounded-xl border border-gray-100 shadow-2xs">
-              <p className="text-[11px] font-medium text-muted">Knowledge Gaps</p>
-              <p className="text-xl font-bold text-amber-600 mt-0.5">{profile?.overview.knowledgeGapsCount ?? 0}</p>
-              <p className="text-[10px] text-muted">&lt;50% mastery (≥3 att)</p>
-            </div>
-
-            <div className="p-3 bg-white/80 rounded-xl border border-gray-100 shadow-2xs">
-              <p className="text-[11px] font-medium text-muted">Overdue Reviews</p>
-              <p className={`text-xl font-bold mt-0.5 ${(profile?.overview.overdueReviewsCount ?? 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                {profile?.overview.overdueReviewsCount ?? 0}
-              </p>
-              <p className="text-[10px] text-muted">SM-2 interval due</p>
-            </div>
-          </div>
-        </Card>
-
-        {/* AI COACH SYNTHESIS CARD */}
-        <Card className="p-6 border-indigo-100 bg-white shadow-sm">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
-            <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center flex-shrink-0">
-                <Sparkles className="h-5 w-5" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-base text-dark">AI Educational Science Coach</h3>
-                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
-                    {synthesis?.source === 'AI_CLOUD' ? 'Gemini 2.5 Flash' : 'Deterministic Evidence Engine'}
-                  </span>
-                </div>
-                <p className="text-xs text-muted">Grounded in your verified empirical attempts and spaced retention state</p>
-              </div>
-            </div>
-
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={handleSynthesize}
-              disabled={isSynthesizing}
-              className="text-xs whitespace-nowrap"
-            >
-              {isSynthesizing ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Synthesizing...
-                </>
-              ) : (
-                <>
-                  <Zap className="h-3.5 w-3.5 mr-1.5 text-primary" /> Regenerate Analysis
-                </>
-              )}
-            </Button>
-          </div>
-
-          <div className="space-y-3.5 text-xs text-dark/90 leading-relaxed bg-gray-50/70 p-4 rounded-xl border border-gray-200/60">
-            <p>
-              <strong className="text-dark font-semibold">Executive Assessment: </strong>
-              {synthesis?.summary || profile?.deterministicSummary || 'Calibrating model...'}
+            <h2 className="text-xl font-bold mt-4">{user?.name || 'Learner'}'s Cognitive Model</h2>
+            <p className="text-muted text-sm">
+              {snapshot && snapshot.totalAttempts > 0
+                ? `Computed from ${snapshot.totalAttempts} verified question attempt(s)`
+                : 'Awaiting your first diagnostic or practice quiz attempt'}
             </p>
-
-            {synthesis && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-gray-200/60 mt-3">
-                <div className="p-3 bg-white rounded-lg border border-gray-100">
-                  <span className="font-semibold text-emerald-700 text-[11px] block mb-1">Key Strengths</span>
-                  <p className="text-muted text-[11px]">{synthesis.strengthsSummary}</p>
-                </div>
-                <div className="p-3 bg-white rounded-lg border border-gray-100">
-                  <span className="font-semibold text-amber-700 text-[11px] block mb-1">Growth Areas</span>
-                  <p className="text-muted text-[11px]">{synthesis.gapsSummary}</p>
-                </div>
-                <div className="p-3 bg-white rounded-lg border border-gray-100">
-                  <span className="font-semibold text-indigo-700 text-[11px] block mb-1">Recommended Next Step</span>
-                  <p className="text-muted text-[11px]">{synthesis.recommendedFocus}</p>
-                </div>
-              </div>
-            )}
-          </div>
-        </Card>
-
-        {/* VIEW FILTER TABS */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200 pb-3">
-          <div className="flex items-center gap-1.5 bg-gray-100 p-1 rounded-xl">
-            <button
-              onClick={() => setActiveTab('topics')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'topics' ? 'bg-white text-primary shadow-sm' : 'text-muted hover:text-dark'
-              }`}
-            >
-              All Topics ({profile?.topics.length ?? 0})
-            </button>
-            <button
-              onClick={() => setActiveTab('strengths')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'strengths' ? 'bg-white text-primary shadow-sm' : 'text-muted hover:text-dark'
-              }`}
-            >
-              Strengths ({profile?.strengths.length ?? 0})
-            </button>
-            <button
-              onClick={() => setActiveTab('gaps')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'gaps' ? 'bg-white text-primary shadow-sm' : 'text-muted hover:text-dark'
-              }`}
-            >
-              Knowledge Gaps ({profile?.knowledgeGaps.length ?? 0})
-            </button>
-            <button
-              onClick={() => setActiveTab('calibration')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'calibration' ? 'bg-white text-primary shadow-sm' : 'text-muted hover:text-dark'
-              }`}
-            >
-              Calibration &amp; Unassessed ({((profile?.calibratingTopics.length ?? 0) + (profile?.unassessedTopics.length ?? 0))})
-            </button>
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-muted">
-            <ShieldCheck className="h-4 w-4 text-emerald-600" />
-            <span>Separating measured facts from Bayesian estimates</span>
+          {/* 2x2 Grid of Aspects */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative z-10">
+            <LearningTwinCard
+              title="Knowledge Graph"
+              icon={Target}
+              items={knowledgeGraphItems}
+              colorClass="text-blue-500"
+            />
+            <LearningTwinCard
+              title="Evidence & Strengths"
+              icon={Sparkles}
+              items={strengthItems}
+              colorClass="text-green-500"
+            />
+            <LearningTwinCard
+              title="Observed Mistake Patterns"
+              icon={LineChart}
+              items={struggleItems}
+              colorClass="text-red-500"
+            />
+            <LearningTwinCard
+              title="Preferences & Strategy"
+              icon={BookOpen}
+              items={[
+                `Style: ${learningStyle}`,
+                `Session: ${preferredSession}`,
+                `Adaptive Tutor Strategy: ${activeStrategyLabel}`,
+                snapshot?.nextLearningAction
+                  ? `Recommended Difficulty: ${snapshot.nextLearningAction.suggestedDifficulty.toUpperCase()} (L${snapshot.nextLearningAction.suggestedDifficultyLevel})`
+                  : 'Recommended Difficulty: EASY (L2)',
+              ]}
+              colorClass="text-purple-500"
+            />
           </div>
         </div>
 
-        {/* TOPICS GRID */}
-        {loading ? (
-          <div className="p-16 text-center text-muted flex flex-col items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-primary mb-3" />
-            <p>Constructing cognitive twin from live learning records...</p>
+        {/* How MindMate uses this */}
+        <div className="pt-8 border-t border-border">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-xl font-bold">How MindMate Uses Your Twin</h3>
+            <Button variant="secondary" onClick={() => setIsModalOpen(true)}>
+              <Settings className="h-4 w-4 mr-2" /> Update Preferences
+            </Button>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {(activeTab === 'topics'
-              ? profile?.topics || []
-              : activeTab === 'strengths'
-              ? profile?.strengths || []
-              : activeTab === 'gaps'
-              ? profile?.knowledgeGaps || []
-              : [...(profile?.calibratingTopics || []), ...(profile?.unassessedTopics || [])]
-            ).map((topic) => (
-              <Card
-                key={topic.topicId}
-                className="p-5 flex flex-col justify-between border-border hover:border-primary/40 transition-all shadow-2xs"
-              >
-                <div>
-                  {/* Topic Title & Badges */}
-                  <div className="flex items-start justify-between gap-3 mb-2">
-                    <div>
-                      <h4 className="font-bold text-dark text-base">{topic.topicName}</h4>
-                      <p className="text-[11px] text-muted">Topic ID: {topic.topicId}</p>
-                    </div>
-                    <div className="flex flex-col items-end gap-1">
-                      {getStatusBadge(topic.modelEstimates.status, topic.isAssessed)}
-                      {topic.isAssessed && getConfidenceBadge(topic.modelEstimates.confidenceLevel)}
-                    </div>
-                  </div>
 
-                  {/* Bayesian Mastery Score & Progress Bar */}
-                  <div className="my-3 space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-muted font-medium">Estimated Mastery (Beta-Binomial)</span>
-                      <span className="font-bold text-dark">
-                        {topic.isAssessed ? `${topic.modelEstimates.masteryScore}%` : 'Not Assessed (Prior 50%)'}
-                      </span>
-                    </div>
-                    <ProgressBar
-                      value={topic.isAssessed ? topic.modelEstimates.masteryScore : 50}
-                      className="h-2"
-                    />
-                  </div>
+          <p className="text-muted mb-8 max-w-3xl leading-relaxed">
+            Your Adaptive Learning Twin is a real-time model of how you learn. MindMate constantly updates this model based on your interactions, performance, and behavior to personalize every aspect of your learning journey.
+          </p>
 
-                  {/* Measured Facts vs Model Estimates Box */}
-                  <div className="grid grid-cols-2 gap-2 p-3 bg-gray-50/70 rounded-xl text-xs my-3 border border-gray-100">
-                    <div>
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted block mb-0.5">
-                        Measured Facts
-                      </span>
-                      <p className="text-dark font-medium">
-                        {topic.measuredObservations.correctCount} / {topic.measuredObservations.totalAttempts} correct
-                        {topic.measuredObservations.totalAttempts > 0 && ` (${topic.measuredObservations.accuracyPct}%)`}
-                      </p>
-                      <p className="text-[11px] text-muted mt-0.5">
-                        {topic.measuredObservations.lastPracticed
-                          ? `Last: ${new Date(topic.measuredObservations.lastPracticed).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
-                          : 'No attempts'}
-                      </p>
-                    </div>
-
-                    <div>
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted block mb-0.5">
-                        Memory Retention
-                      </span>
-                      <p className="text-dark font-medium">
-                        {topic.modelEstimates.spacedIntervalDays
-                          ? `Interval: ${topic.modelEstimates.spacedIntervalDays}d (EF ${topic.modelEstimates.spacedEaseFactor})`
-                          : 'No review scheduled'}
-                      </p>
-                      {topic.modelEstimates.isSpacedRepetitionDue && (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded mt-0.5">
-                          <AlertTriangle className="h-3 w-3" /> Overdue by {topic.modelEstimates.daysOverdue}d
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Trend Indicator */}
-                  <div className="flex items-center justify-between text-xs py-1">
-                    <span className="text-muted">Recent Performance Trend:</span>
-                    {getTrendIcon(topic.trend)}
-                  </div>
-
-                  {/* Pedagogical Rationale */}
-                  <div className="text-[11px] text-muted italic bg-indigo-50/40 p-2.5 rounded-lg border border-indigo-100/50 my-2">
-                    {topic.recommendedAction.rationale}
-                  </div>
-                </div>
-
-                {/* Action Button */}
-                <div className="pt-3 border-t border-gray-100 mt-2 flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-muted">
-                    {topic.materials.length > 0 ? `${topic.materials.length} linked document${topic.materials.length === 1 ? '' : 's'}` : 'Core curriculum'}
-                  </span>
-                  <Button
-                    size="sm"
-                    onClick={() => navigate(topic.recommendedAction.actionUrl)}
-                    className="text-xs"
-                  >
-                    {topic.recommendedAction.title.split(':')[0]} <ArrowRight className="h-3 w-3 ml-1" />
-                  </Button>
-                </div>
-              </Card>
-            ))}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <Card className="p-6 border border-primary/20 bg-indigo-50/50 dark:bg-indigo-950/20">
+              <Zap className="h-6 w-6 text-primary mb-3" />
+              <h4 className="font-semibold mb-2">Explanations</h4>
+              <p className="text-sm text-dark/80">Tailors content delivery (e.g., more examples vs. theory) based on what resonates with you.</p>
+            </Card>
+            <Card className="p-6 border border-emerald-500/20 bg-green-50/50 dark:bg-emerald-950/20">
+              <Target className="h-6 w-6 text-success mb-3" />
+              <h4 className="font-semibold mb-2">Practice Generation</h4>
+              <p className="text-sm text-dark/80">Creates custom quizzes targeting exactly the edge cases you've struggled with.</p>
+            </Card>
+            <Card className="p-6 border border-amber-500/20 bg-yellow-50/50 dark:bg-amber-950/20">
+              <Clock className="h-6 w-6 text-warning mb-3" />
+              <h4 className="font-semibold mb-2">Pacing & Scheduling</h4>
+              <p className="text-sm text-dark/80">Recommends breaks and schedules reviews right before you're likely to forget.</p>
+            </Card>
           </div>
-        )}
-
-        {/* SETTINGS / PREFERENCES MODAL */}
-        <Modal
-          isOpen={isSettingsModalOpen}
-          onClose={() => setIsSettingsModalOpen(false)}
-          title="Cognitive Model Preferences"
-        >
-          <div className="space-y-5 text-sm">
-            <div>
-              <label className="block text-xs font-semibold text-dark mb-1.5">Primary Learning Style</label>
-              <select
-                value={preferredStyle}
-                onChange={(e) => setPreferredStyle(e.target.value)}
-                className="w-full rounded-btn border border-border p-2 text-xs focus:ring-2 focus:ring-primary outline-none"
-              >
-                <option value="visual">Visual &amp; Conceptual (Diagrams &amp; Structural overviews)</option>
-                <option value="interactive">Interactive / Code-First (Practice problems &amp; drills)</option>
-                <option value="theory">Theory-First (Formal definitions &amp; proofs)</option>
-                <option value="examples">Example-Driven (Real-world walkthroughs)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-dark mb-1.5">Preferred Session Duration</label>
-              <select
-                value={sessionLength}
-                onChange={(e) => setSessionLength(Number(e.target.value))}
-                className="w-full rounded-btn border border-border p-2 text-xs focus:ring-2 focus:ring-primary outline-none"
-              >
-                <option value={10}>10 minutes (Micro-learning)</option>
-                <option value={15}>15 minutes (Standard pomodoro)</option>
-                <option value={20}>20 minutes (Focused deep dive)</option>
-                <option value={30}>30 minutes (Comprehensive session)</option>
-              </select>
-            </div>
-
-            <div className="pt-4 border-t border-gray-100 flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setIsSettingsModalOpen(false)}>
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  setIsSettingsModalOpen(false);
-                  showToast('Cognitive preferences updated.', 'success');
-                }}
-              >
-                Save Preferences
-              </Button>
-            </div>
-          </div>
-        </Modal>
+        </div>
       </div>
+
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Update Preferences">
+        <div className="space-y-6">
+          <div>
+            <label className="block text-sm font-medium mb-2 text-dark">Primary Learning Style</label>
+            <select
+              value={formStyle}
+              onChange={e => setFormStyle(e.target.value)}
+              className="w-full rounded-xl border border-border bg-surface text-dark p-2.5 focus:ring-2 focus:ring-primary focus:border-transparent outline-none text-sm"
+            >
+              <option value="Examples first" className="bg-surface text-dark">Examples first</option>
+              <option value="Theory first" className="bg-surface text-dark">Theory first</option>
+              <option value="Visual/Diagrams" className="bg-surface text-dark">Visual/Diagrams</option>
+              <option value="Interactive/Doing" className="bg-surface text-dark">Interactive/Doing</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-2 text-dark">Preferred Session Length</label>
+            <select
+              value={formSession}
+              onChange={e => setFormSession(e.target.value)}
+              className="w-full rounded-xl border border-border bg-surface text-dark p-2.5 focus:ring-2 focus:ring-primary focus:border-transparent outline-none text-sm"
+            >
+              <option value="15-30 min" className="bg-surface text-dark">15–30 min (Pomodoro)</option>
+              <option value="30-45 min" className="bg-surface text-dark">30–45 min (Focused)</option>
+              <option value="60+ min" className="bg-surface text-dark">60+ min (Deep Work)</option>
+            </select>
+          </div>
+          <div className="pt-4 border-t flex justify-end gap-3">
+            <Button variant="ghost" onClick={() => setIsModalOpen(false)}>Cancel</Button>
+            <Button onClick={handleSave}>Save Changes</Button>
+          </div>
+        </div>
+      </Modal>
     </AppShell>
   );
 }

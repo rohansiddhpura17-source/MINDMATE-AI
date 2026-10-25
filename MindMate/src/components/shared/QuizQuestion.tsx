@@ -5,17 +5,8 @@ import { Button } from '../ui/Button';
 import { cn } from '../../utils';
 import { CheckCircle, XCircle } from 'lucide-react';
 
-export interface QuizQuestionData {
-  id: number | string;
-  question: string;
-  options: string[];
-  correct?: number;
-  explanation?: string;
-  topic?: string;
-}
-
 interface QuizQuestionProps {
-  question: QuizQuestionData;
+  question: QuizQuestionType;
   selectedOption: number | null;
   onSelectOption: (index: number) => void;
   isAnswered: boolean;
@@ -24,7 +15,7 @@ interface QuizQuestionProps {
 export function QuizQuestion({ question, selectedOption, onSelectOption, isAnswered }: QuizQuestionProps) {
   return (
     <div className="space-y-6">
-      <Card className="p-6 md:p-8 text-center bg-indigo-50/50 border-indigo-100">
+      <Card className="p-6 md:p-8 text-center bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-950/50">
         <h3 className="text-xl md:text-2xl font-medium text-dark">
           {question.question}
         </h3>
@@ -36,7 +27,7 @@ export function QuizQuestion({ question, selectedOption, onSelectOption, isAnswe
           const isCorrect = question.correct === index;
           const showCorrect = isAnswered && isCorrect;
           const showWrong = isAnswered && isSelected && !isCorrect;
-          
+
           return (
             <button
               key={index}
@@ -45,11 +36,11 @@ export function QuizQuestion({ question, selectedOption, onSelectOption, isAnswe
               className={cn(
                 "w-full text-left p-4 rounded-xl border-2 transition-all flex items-center justify-between",
                 {
-                  "border-border bg-surface hover:border-primary/50 hover:bg-gray-50": !isAnswered && !isSelected,
-                  "border-primary bg-indigo-50 ring-2 ring-primary ring-opacity-50": !isAnswered && isSelected,
-                  "border-success bg-green-50 text-green-900": showCorrect,
-                  "border-danger bg-red-50 text-red-900": showWrong,
-                  "border-border bg-gray-50 opacity-50": isAnswered && !isSelected && !isCorrect,
+                  "border-border bg-surface text-dark hover:border-primary/50 hover:bg-gray-50 dark:hover:bg-slate-800": !isAnswered && !isSelected,
+                  "border-primary bg-indigo-50 dark:bg-indigo-950/40 text-dark ring-2 ring-primary ring-opacity-50": !isAnswered && isSelected,
+                  "border-success bg-green-50 dark:bg-emerald-950/40 text-green-900 dark:text-emerald-200": showCorrect,
+                  "border-danger bg-red-50 dark:bg-red-950/40 text-red-900 dark:text-red-200": showWrong,
+                  "border-border bg-gray-50 dark:bg-slate-800/40 opacity-50 text-muted": isAnswered && !isSelected && !isCorrect,
                 }
               )}
             >
