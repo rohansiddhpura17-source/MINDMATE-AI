@@ -62,9 +62,14 @@ export interface Insight {
 }
 
 export interface Task {
+  id?: string;
+  user_id?: string;
   name: string;
   duration: string;
   type: string;
+  completed?: boolean;
+  priority?: 'low' | 'medium' | 'high';
+  due_date?: string;
 }
 
 export interface PlannerDayData {
@@ -81,9 +86,13 @@ export interface ChatMessage {
   promptContent?: string;
   code?: string;
   explanation?: string;
-  source?: 'cloud' | 'local' | 'mock-fallback';
+  source?: 'cloud' | 'local' | 'ollama' | 'deterministic-fallback' | 'mock-fallback';
   model?: string;
   timestamp?: number;
   elapsedMs?: number;
+  loadDurationMs?: number;
+  status?: 'preparing' | 'loading_model' | 'generating' | 'streaming' | 'completed' | 'failed' | 'cancelled';
+  error?: string;
+  requestPrompt?: string;
   visual?: VisualPayload;
 }

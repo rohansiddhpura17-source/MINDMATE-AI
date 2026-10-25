@@ -10,7 +10,7 @@ import {
 import { parseCodeAndExplanation } from './cloudAdapter';
 import { contentModerationService } from '../safety/contentModerationService';
 
-export const DEFAULT_LOCAL_MODEL = 'SmolLM2-360M-Instruct-q4f16_1-MLC';
+export const DEFAULT_LOCAL_MODEL = 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
 
 export interface LocalModelOption {
   id: string;
@@ -18,21 +18,31 @@ export interface LocalModelOption {
   size: string;
   description: string;
   recommendedVRAM: string;
+  universal?: boolean;
 }
 
 export const SUPPORTED_LOCAL_MODELS: LocalModelOption[] = [
   {
     id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
-    name: 'Qwen 2.5 (0.5B Instruct)',
+    name: 'Qwen 2.5 (0.5B Instruct) - Recommended',
     size: '~390 MB',
-    description: 'Fast, lightweight educational tutor optimized for quick browser execution.',
-    recommendedVRAM: '500 MB'
+    description: 'Universal educational tutor. Runs reliably on all WebGPU systems without FP16 shader requirements.',
+    recommendedVRAM: '500 MB',
+    universal: true
+  },
+  {
+    id: 'SmolLM2-360M-Instruct-q4f32_1-MLC',
+    name: 'SmolLM2 (360M FP32 Universal)',
+    size: '~230 MB',
+    description: 'Ultra-compact universal model. Fast download and compatible with all WebGPU devices.',
+    recommendedVRAM: '350 MB',
+    universal: true
   },
   {
     id: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
-    name: 'SmolLM2 (360M Instruct)',
+    name: 'SmolLM2 (360M FP16 High-Speed)',
     size: '~230 MB',
-    description: 'Ultra-compact model with minimal download overhead.',
+    description: 'Maximum speed on GPUs with shader-f16 support (Apple Silicon, modern NVIDIA/AMD).',
     recommendedVRAM: '350 MB'
   },
   {
@@ -48,7 +58,9 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
   private engine: webllm.MLCEngineInterface | null = null;
   private currentModelId: string = DEFAULT_LOCAL_MODEL;
   private isInitializing: boolean = false;
+  private initCancelled: boolean = false;
   private isLoaded: boolean = false;
+  private lastError: string | null = null;
   private lastProgress: ModelProgress | null = null;
   private progressListeners: Set<(progress: ModelProgress) => void> = new Set();
 
@@ -58,6 +70,74 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
       'gpu' in navigator &&
       Boolean((navigator as any).gpu)
     );
+  }
+
+  public isModelInitializing(): boolean {
+    return this.isInitializing;
+  }
+
+  public getLastError(): string | null {
+    return this.lastError;
+  }
+
+  public cancelInitialization(): void {
+    if (this.isInitializing) {
+      this.initCancelled = true;
+      this.isInitializing = false;
+    }
+    if (!this.isLoaded) {
+      this.lastProgress = null;
+    }
+  }
+
+  public async detectGPUCapabilities(): Promise<{
+    supported: boolean;
+    adapterName: string;
+    hasShaderF16: boolean;
+    recommendedModel: string;
+    reason?: string;
+  }> {
+    if (typeof navigator === 'undefined' || !('gpu' in navigator) || !Boolean((navigator as any).gpu)) {
+      return {
+        supported: false,
+        adapterName: 'None',
+        hasShaderF16: false,
+        recommendedModel: DEFAULT_LOCAL_MODEL,
+        reason: 'WebGPU is not supported by your current browser. Please use Chrome 113+, Edge 113+, or Safari 18+.'
+      };
+    }
+
+    try {
+      const adapter = await (navigator as any).gpu.requestAdapter();
+      if (!adapter) {
+        return {
+          supported: false,
+          adapterName: 'Adapter unavailable',
+          hasShaderF16: false,
+          recommendedModel: DEFAULT_LOCAL_MODEL,
+          reason: 'No compatible WebGPU hardware adapter found. Ensure hardware acceleration is enabled in your browser settings (e.g. Settings > System > Use graphics acceleration).'
+        };
+      }
+
+      const hasF16 = adapter.features?.has('shader-f16') || false;
+      const info = (await adapter.requestAdapterInfo?.()) || {};
+      const adapterName = info.description || info.device || info.vendor || 'Standard WebGPU Device';
+
+      return {
+        supported: true,
+        adapterName,
+        hasShaderF16: hasF16,
+        recommendedModel: hasF16 ? 'SmolLM2-360M-Instruct-q4f16_1-MLC' : 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC'
+      };
+    } catch (e: any) {
+      return {
+        supported: false,
+        adapterName: 'Error querying adapter',
+        hasShaderF16: false,
+        recommendedModel: DEFAULT_LOCAL_MODEL,
+        reason: e.message || 'Error occurred while querying WebGPU hardware.'
+      };
+    }
   }
 
   public getModelId(): string {
@@ -104,6 +184,17 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
     }
   }
 
+  public async clearModelCache(modelId = this.currentModelId): Promise<void> {
+    try {
+      if (typeof (webllm as any).deleteModelAllInfoInCache === 'function') {
+        await (webllm as any).deleteModelAllInfoInCache(modelId);
+      }
+      this.lastProgress = null;
+    } catch (e) {
+      console.warn('Failed to clear model cache:', e);
+    }
+  }
+
   public async isAvailable(): Promise<boolean> {
     if (!this.isWebGPUSupported()) {
       return false;
@@ -123,48 +214,115 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
       throw new Error('Local model initialization is already in progress.');
     }
 
-    if (!this.isWebGPUSupported()) {
-      throw new Error(
-        'WebGPU is not supported in this browser. Please use Chrome 113+, Edge 113+, Safari 18+, or enable WebGPU flags in your browser.'
-      );
-    }
-
     this.isInitializing = true;
-    this.currentModelId = modelId;
-
-    if (onProgress) {
-      this.onProgress(onProgress);
-    }
+    this.initCancelled = false;
+    this.lastError = null;
+    const unsub = onProgress ? this.onProgress(onProgress) : null;
 
     try {
       this.notifyProgress({
-        text: `Initializing WebGPU engine for ${modelId}...`,
+        text: 'Inspecting WebGPU hardware capabilities...',
+        progress: 0.02,
+        timeElapsed: 0
+      });
+
+      const caps = await this.detectGPUCapabilities();
+      if (this.initCancelled) {
+        throw new Error('WebGPU initialization was cancelled.');
+      }
+      if (!caps.supported) {
+        throw new Error(caps.reason || 'WebGPU is not supported in this browser. Please use Chrome 113+, Edge 113+, Safari 18+, or enable WebGPU in your browser flags.');
+      }
+
+      let activeModelId = modelId;
+      // Auto-fallback away from shader-f16 model if hardware does not support it
+      if (!caps.hasShaderF16 && activeModelId.includes('q4f16_1') && activeModelId.startsWith('SmolLM2')) {
+        console.warn(`[LocalWebLLMAdapter] Device does not support shader-f16 for ${activeModelId}. Automatically selecting universal FP32 model.`);
+        activeModelId = 'SmolLM2-360M-Instruct-q4f32_1-MLC';
+      }
+
+      this.currentModelId = activeModelId;
+
+      this.notifyProgress({
+        text: `Initializing WebGPU engine for ${activeModelId} on ${caps.adapterName}...`,
         progress: 0.05,
         timeElapsed: 0
       });
 
       // Initialize MLCEngine
-      const engine = await webllm.CreateMLCEngine(modelId, {
+      const engine = await webllm.CreateMLCEngine(activeModelId, {
         initProgressCallback: (report) => {
-          this.notifyProgress(report);
+          if (!this.initCancelled) {
+            this.notifyProgress(report);
+          }
         }
       });
 
+      if (this.initCancelled) {
+        try {
+          await engine.unload();
+        } catch {}
+        throw new Error('WebGPU initialization was cancelled.');
+      }
+
       this.engine = engine;
       this.isLoaded = true;
+      this.lastError = null;
 
       this.notifyProgress({
-        text: `Model ${modelId} ready for local inference.`,
+        text: `Model ${activeModelId} ready for local inference.`,
         progress: 1.0,
         timeElapsed: 0
       });
     } catch (err: any) {
       this.isLoaded = false;
       this.engine = null;
-      throw new Error(`Failed to initialize local WebLLM model: ${err.message}`);
+      this.lastProgress = null;
+      const msg = err?.message || String(err);
+      if (msg.includes('shader-f16')) {
+        this.lastError = 'This local model requires 16-bit floating point shaders (shader-f16), which are not supported by your GPU. Please select a universal model like Qwen 2.5 or SmolLM2 FP32.';
+        throw new Error(this.lastError);
+      }
+      if (msg.includes('quota') || msg.includes('QuotaExceededError')) {
+        this.lastError = 'Browser storage quota exceeded. Please clear browser site data or free up local disk space.';
+        throw new Error(this.lastError);
+      }
+      this.lastError = `Failed to initialize local WebLLM model: ${msg}`;
+      throw new Error(this.lastError);
     } finally {
       this.isInitializing = false;
+      if (unsub) unsub();
     }
+  }
+
+  public async testInference(testPrompt = 'Explain the difference between a variable and a constant in one concise sentence.'): Promise<{
+    success: boolean;
+    output: string;
+    elapsedMs: number;
+    tokensPerSecond: number;
+  }> {
+    if (!this.engine || !this.isLoaded) {
+      throw new Error('Local model is not loaded. Please initialize the local model first.');
+    }
+    const t0 = performance.now();
+    const reply = await this.engine.chat.completions.create({
+      messages: [
+        { role: 'system', content: 'You are MindMate educational AI. Be concise.' },
+        { role: 'user', content: testPrompt }
+      ],
+      max_tokens: 60,
+      temperature: 0.2
+    });
+    const elapsedMs = Math.round(performance.now() - t0);
+    const content = reply.choices[0]?.message?.content || '';
+    const tokenEst = Math.ceil(content.length / 4);
+    const tokPerSec = elapsedMs > 0 ? Math.round((tokenEst / (elapsedMs / 1000)) * 10) / 10 : 0;
+    return {
+      success: true,
+      output: content,
+      elapsedMs,
+      tokensPerSecond: tokPerSec
+    };
   }
 
   public async unload(): Promise<void> {

@@ -2,6 +2,18 @@ import { IAITutorAdapter, SendMessageOptions, AIStreamCallbacks, AIResponse } fr
 import { RESPONSE_FORMATTING_GUIDELINES } from './responseFormatting';
 import { contentModerationService } from '../safety/contentModerationService';
 
+/**
+ * The /api/* endpoints are Vercel serverless functions. They are not served by the
+ * plain Vite dev server (`npm run dev`), which returns 404 or raw source for them.
+ */
+const CLOUD_BACKEND_UNAVAILABLE_MESSAGE =
+  'Cloud AI backend (/api/ai) is not running. The /api functions are Vercel serverless functions and are not served by `npm run dev`. ' +
+  'Run the app with `vercel dev` and set GEMINI_API_KEY, or switch to Offline mode and load the local WebGPU model.';
+
+function isJsonResponse(res: Response): boolean {
+  return (res.headers.get('content-type') || '').includes('application/json');
+}
+
 export class CloudAIAdapter implements IAITutorAdapter {
   private apiBaseUrl: string;
 
@@ -19,12 +31,14 @@ export class CloudAIAdapter implements IAITutorAdapter {
       const res = await fetch(`${this.apiBaseUrl}/status`, {
         signal: AbortSignal.timeout(4000)
       });
-      if (!res.ok) {
+      if (!res.ok || !isJsonResponse(res)) {
         return {
           configured: false,
           provider: 'unknown',
           model: 'unknown',
-          message: `Backend returned HTTP ${res.status}`
+          message: res.status === 404 || !isJsonResponse(res)
+            ? CLOUD_BACKEND_UNAVAILABLE_MESSAGE
+            : `Backend returned HTTP ${res.status}`
         };
       }
       return await res.json();
@@ -33,7 +47,7 @@ export class CloudAIAdapter implements IAITutorAdapter {
         configured: false,
         provider: 'unknown',
         model: 'unknown',
-        message: 'Backend AI service unreachable. Ensure backend server is running on port 4000.'
+        message: CLOUD_BACKEND_UNAVAILABLE_MESSAGE
       };
     }
   }
@@ -123,7 +137,11 @@ export class CloudAIAdapter implements IAITutorAdapter {
       if (err.name === 'AbortError') {
         throw new Error('Cloud AI request was cancelled.');
       }
-      throw new Error(`Failed to contact cloud AI backend: ${err.message}. Is backend running on port 4000?`);
+      throw new Error(`Failed to contact cloud AI backend: ${err.message}. ${CLOUD_BACKEND_UNAVAILABLE_MESSAGE}`);
+    }
+
+    if (response.status === 404) {
+      throw new Error(CLOUD_BACKEND_UNAVAILABLE_MESSAGE);
     }
 
     if (!response.ok) {

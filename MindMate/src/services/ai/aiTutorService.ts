@@ -1,17 +1,94 @@
 import {
-  AIMessage,
+  AdaptiveTeachingContext,
   AIMode,
   AIEngineStatus,
   AIResponse,
   AIStreamCallbacks,
   SendMessageOptions,
-  ModelProgress
+  ModelProgress,
 } from './types';
-import { cloudAIAdapter } from './cloudAdapter';
-import { localWebLLMAdapter, DEFAULT_LOCAL_MODEL } from './localWebLLMAdapter';
+import { cloudAIAdapter, CloudAIAdapter } from './cloudAdapter';
+import {
+  localWebLLMAdapter,
+  LocalWebLLMAdapter,
+  DEFAULT_LOCAL_MODEL,
+} from './localWebLLMAdapter';
+import {
+  ollamaAdapter,
+  OllamaAdapter,
+  DEFAULT_OLLAMA_MODEL,
+} from './ollamaAdapter';
 import { contentModerationService } from '../safety/contentModerationService';
+import {
+  MULTILINGUAL_FLASHCARDS,
+  MULTILINGUAL_QUICK_RECALL,
+  resolveTopicMetadata,
+} from '../../data/learningContent';
+import { STRATEGY_LABELS } from '../adaptive/adaptiveLearningEngine';
 
 const MODE_STORAGE_KEY = 'mindmate_ai_mode';
+
+/**
+ * Build a transparent, deterministic curriculum explanation from verified local
+ * study cards when neither Ollama nor Cloud AI is reachable. Explicitly labeled
+ * as deterministic fallback content.
+ */
+export function buildDeterministicCurriculumFallback(
+  userPrompt: string,
+  adaptiveContext?: AdaptiveTeachingContext,
+  unavailableReason?: string
+): { content: string; code?: string; explanation: string } {
+  const topicMeta = resolveTopicMetadata(
+    adaptiveContext?.topicId || adaptiveContext?.topicName || userPrompt || 'python-functions'
+  );
+  const strategy = adaptiveContext?.explanationStrategy || 'step-by-step';
+  const strategyLabel = STRATEGY_LABELS[strategy] || strategy;
+
+  const recallItems = MULTILINGUAL_QUICK_RECALL.filter(
+    (item) => item.topicId === topicMeta.id && item.language === 'en'
+  );
+  const flashcards = MULTILINGUAL_FLASHCARDS.filter(
+    (fc) => fc.topicId === topicMeta.id && fc.language === 'en'
+  );
+
+  const primaryRecall = recallItems[0] || MULTILINGUAL_QUICK_RECALL[0];
+  const primaryCard = flashcards[0] || MULTILINGUAL_FLASHCARDS[0];
+
+  const lines: string[] = [];
+  if (unavailableReason) {
+    lines.push(`> **Local Deterministic Study Guide (Offline Fallback):** ${unavailableReason}`);
+    lines.push('');
+  }
+  lines.push(`### ${topicMeta.name} — ${strategyLabel}`);
+  if (adaptiveContext?.strategyReason) {
+    lines.push(`*Adaptation reason:* ${adaptiveContext.strategyReason}`);
+  }
+  lines.push('');
+  lines.push(`**Core Concept:** ${primaryCard.front}`);
+  lines.push(primaryCard.back);
+  lines.push('');
+  lines.push(`**Key Rule (${primaryRecall.title}):** ${primaryRecall.keyFact}`);
+  lines.push(primaryRecall.detail);
+
+  if (
+    adaptiveContext?.recentMistakesSummary &&
+    adaptiveContext.recentMistakesSummary.length > 0
+  ) {
+    lines.push('');
+    lines.push('**Targeted Focus From Your Recent Quiz Attempts:**');
+    for (const m of adaptiveContext.recentMistakesSummary.slice(0, 3)) {
+      lines.push(`- ${m}`);
+    }
+  }
+
+  const code = primaryRecall.codeSnippet;
+  const explanation = lines.join('\n');
+  const fullContent = code
+    ? `${explanation}\n\n\`\`\`python\n${code}\n\`\`\``
+    : explanation;
+
+  return { content: fullContent, code, explanation };
+}
 
 export class AITutorService {
   private currentMode: AIMode = 'auto';
@@ -21,18 +98,38 @@ export class AITutorService {
   private activeRequestId: number = 0;
   private activePhase: import('./types').GenerationPhase = 'idle';
 
-  constructor() {
-    // Load persisted mode preference
-    if (typeof localStorage !== 'undefined') {
+  private cloud: CloudAIAdapter;
+  private localWebLLM: LocalWebLLMAdapter;
+  private ollama: OllamaAdapter;
+
+  constructor(deps?: {
+    cloudAdapter?: CloudAIAdapter;
+    localWebLLMAdapter?: LocalWebLLMAdapter;
+    ollamaAdapter?: OllamaAdapter;
+    initialMode?: AIMode;
+  }) {
+    this.cloud = deps?.cloudAdapter || cloudAIAdapter;
+    this.localWebLLM = deps?.localWebLLMAdapter || localWebLLMAdapter;
+    this.ollama = deps?.ollamaAdapter || ollamaAdapter;
+
+    if (deps?.initialMode) {
+      this.currentMode = deps.initialMode;
+    } else if (typeof localStorage !== 'undefined') {
       const savedMode = localStorage.getItem(MODE_STORAGE_KEY) as AIMode;
-      if (savedMode === 'online' || savedMode === 'offline' || savedMode === 'auto') {
+      if (
+        savedMode === 'online' ||
+        savedMode === 'offline' ||
+        savedMode === 'ollama' ||
+        savedMode === 'auto'
+      ) {
         this.currentMode = savedMode;
       }
     }
 
-    // Subscribe to local adapter progress
-    localWebLLMAdapter.onProgress(() => {
-      this.notifyStatusChange();
+    this.localWebLLM.onProgress(() => {
+      if (this.currentMode === 'offline') {
+        void this.notifyStatusChange();
+      }
     });
   }
 
@@ -41,21 +138,38 @@ export class AITutorService {
   }
 
   public setMode(mode: AIMode): void {
+    const previousMode = this.currentMode;
     this.currentMode = mode;
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(MODE_STORAGE_KEY, mode);
+    if (previousMode === 'offline' && mode !== 'offline') {
+      this.localWebLLM.cancelInitialization();
     }
-    this.notifyStatusChange();
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(MODE_STORAGE_KEY, mode);
+      } catch {
+        // Ignore quota errors
+      }
+    }
+    void this.notifyStatusChange();
+  }
+
+  public getOllamaAdapter(): OllamaAdapter {
+    return this.ollama;
+  }
+
+  public cancelLocalModelInit(): void {
+    this.localWebLLM.cancelInitialization();
+    void this.notifyStatusChange();
   }
 
   public onStatusChange(listener: (status: AIEngineStatus) => void): () => void {
     this.statusListeners.add(listener);
-    this.getStatus().then(listener);
+    void this.getStatus().then(listener);
     return () => this.statusListeners.delete(listener);
   }
 
-  private async notifyStatusChange(): Promise<void> {
-    const status = await this.getStatus();
+  private async notifyStatusChange(forceRefresh = false): Promise<void> {
+    const status = await this.getStatus(forceRefresh);
     this.statusListeners.forEach((fn) => {
       try {
         fn(status);
@@ -65,35 +179,65 @@ export class AITutorService {
     });
   }
 
-  public async getStatus(): Promise<AIEngineStatus> {
-    const isBrowserOnline = typeof navigator === 'undefined' || navigator.onLine;
-    const shouldCheckCloud = this.currentMode !== 'offline' && isBrowserOnline;
+  public async getStatus(forceRefresh = false): Promise<AIEngineStatus> {
+    const isBrowserOnline =
+      typeof navigator === 'undefined' || navigator.onLine;
+    // Never contact cloud status endpoint when a strictly local mode ('offline' or 'ollama') is active
+    const shouldCheckCloud =
+      this.currentMode !== 'offline' &&
+      this.currentMode !== 'ollama' &&
+      isBrowserOnline;
 
-    const cloudStatus = shouldCheckCloud
-      ? await cloudAIAdapter.getStatus()
-      : {
-          configured: false,
-          provider: 'offline',
-          model: 'offline',
-          message: 'Offline mode active'
-        };
+    // Never touch WebLLM cache or expose WebLLM progress when Ollama Local AI is selected
+    const shouldInspectWebLLM = this.currentMode !== 'ollama';
 
-    const isLocalCached = await localWebLLMAdapter.isModelCached();
-    const isWebGpu = localWebLLMAdapter.isWebGPUSupported();
+    const [cloudStatus, ollamaHealth, isLocalCached] = await Promise.all([
+      shouldCheckCloud
+        ? this.cloud.getStatus()
+        : Promise.resolve({
+            configured: false,
+            provider: 'local-only',
+            model: 'disabled-in-local-mode',
+            message:
+              this.currentMode === 'ollama'
+                ? 'Local Ollama mode active (cloud disabled)'
+                : 'Offline WebGPU mode active (cloud disabled)',
+          }),
+      this.ollama.checkHealth(2500, forceRefresh),
+      shouldInspectWebLLM
+        ? this.localWebLLM.isModelCached()
+        : Promise.resolve(false),
+    ]);
+
+    const isWebGpu = shouldInspectWebLLM
+      ? this.localWebLLM.isWebGPUSupported()
+      : false;
+    const isWebLLMLoaded = shouldInspectWebLLM
+      ? this.localWebLLM.isModelLoaded()
+      : false;
 
     return {
       mode: this.currentMode,
       cloudAvailable: cloudStatus.configured,
       cloudModel: cloudStatus.model,
       cloudMessage: cloudStatus.message,
-      localAvailable: isWebGpu && localWebLLMAdapter.isModelLoaded(),
-      localModelId: localWebLLMAdapter.getModelId(),
-      localModelLoaded: localWebLLMAdapter.isModelLoaded(),
+      localAvailable: isWebGpu && isWebLLMLoaded,
+      localModelId: this.localWebLLM.getModelId(),
+      localModelLoaded: isWebLLMLoaded,
       localModelCached: isLocalCached,
-      localLoadingProgress: localWebLLMAdapter.getLoadingProgress() || undefined,
-      webGpuSupported: isWebGpu,
+      localLoadingProgress:
+        this.currentMode === 'offline'
+          ? this.localWebLLM.getLoadingProgress() || undefined
+          : undefined,
+      webGpuSupported: this.localWebLLM.isWebGPUSupported(),
+      ollamaAvailable: ollamaHealth.available,
+      ollamaModel: ollamaHealth.configuredModel || DEFAULT_OLLAMA_MODEL,
+      ollamaStatus: ollamaHealth.status,
+      ollamaMessage: ollamaHealth.message,
+      ollamaRecoveryGuidance: ollamaHealth.recoveryGuidance,
+      ollamaInstalledModels: ollamaHealth.availableModels,
       isGenerating: this.isGenerating,
-      activePhase: this.activePhase
+      activePhase: this.activePhase,
     };
   }
 
@@ -101,56 +245,67 @@ export class AITutorService {
     modelId = DEFAULT_LOCAL_MODEL,
     onProgress?: (progress: ModelProgress) => void
   ): Promise<void> {
-    await localWebLLMAdapter.initialize(modelId, (p) => {
+    if (this.currentMode === 'ollama') {
+      throw new Error(
+        'Cannot initialize Browser WebGPU model while Ollama — Local AI mode is active. Switch to Offline (WebGPU) mode first.'
+      );
+    }
+    await this.localWebLLM.initialize(modelId, (p) => {
       onProgress?.(p);
-      this.notifyStatusChange();
+      if (this.currentMode === 'offline') {
+        void this.notifyStatusChange();
+      }
     });
-    this.notifyStatusChange();
+    void this.notifyStatusChange();
   }
 
   public abort(): void {
-    this.activeRequestId++; // Invalidate any in-flight streaming tokens
+    this.activeRequestId++;
     if (this.currentAbortController) {
       try {
         this.currentAbortController.abort();
-      } catch (_) {}
+      } catch {
+        // Ignore
+      }
       this.currentAbortController = null;
     }
     this.isGenerating = false;
     this.activePhase = 'idle';
-    this.notifyStatusChange();
+    void this.notifyStatusChange();
   }
 
   public async sendMessageStream(
     options: SendMessageOptions,
     callbacks: AIStreamCallbacks
   ): Promise<AIResponse> {
-    this.abort(); // Cancel any existing generation
+    this.abort();
 
     const requestId = ++this.activeRequestId;
     const abortController = new AbortController();
     this.currentAbortController = abortController;
     this.isGenerating = true;
     this.activePhase = 'preparing';
-    this.notifyStatusChange();
+    void this.notifyStatusChange();
 
     const mergedOptions: SendMessageOptions = {
       ...options,
-      signal: abortController.signal
+      signal: abortController.signal,
     };
 
-    // Guard callbacks to guarantee cancelled or obsolete tokens cannot leak
     const guardedCallbacks: AIStreamCallbacks = {
       onChunk: (chunk: string) => {
         if (requestId === this.activeRequestId) {
           callbacks.onChunk?.(chunk);
         }
       },
-      onPhaseChange: (phase: import('./types').GenerationPhase, detail?: string) => {
+      onPhaseChange: (
+        phase: import('./types').GenerationPhase,
+        detail?: string
+      ) => {
         if (requestId === this.activeRequestId) {
           this.activePhase = phase;
           callbacks.onPhaseChange?.(phase, detail);
-          this.notifyStatusChange();
+          void this.notifyStatusChange();
         }
       },
       onComplete: (res: AIResponse) => {
@@ -164,22 +319,32 @@ export class AITutorService {
           this.activePhase = 'failed';
           callbacks.onError?.(err);
         }
-      }
+      },
     };
 
     try {
-      // Content safety and learning-relevance pre-flight check
-      const userMessages = mergedOptions.messages.filter((m) => m.role === 'user');
+      const userMessages = mergedOptions.messages.filter(
+        (m) => m.role === 'user'
+      );
       const lastUserMsg = userMessages[userMessages.length - 1];
-      const prevUserMsg = userMessages.length > 1 ? userMessages[userMessages.length - 2] : undefined;
-      const prevAssistantMsg = [...mergedOptions.messages].reverse().find((m) => m.role === 'assistant');
+      const prevUserMsg =
+        userMessages.length > 1
+          ? userMessages[userMessages.length - 2]
+          : undefined;
+      const prevAssistantMsg = [...mergedOptions.messages]
+        .reverse()
+        .find((m) => m.role === 'assistant');
 
-      const promptToEvaluate = lastUserMsg?.promptContent || lastUserMsg?.content || '';
-      const moderationResult = contentModerationService.evaluate(promptToEvaluate, {
-        previousQuestion: prevUserMsg?.content,
-        previousAnswer: prevAssistantMsg?.content,
-        currentSubject: mergedOptions.learnerProfile?.goal
-      });
+      const promptToEvaluate =
+        lastUserMsg?.promptContent || lastUserMsg?.content || '';
+      const moderationResult = contentModerationService.evaluate(
+        promptToEvaluate,
+        {
+          previousQuestion: prevUserMsg?.content,
+          previousAnswer: prevAssistantMsg?.content,
+          currentSubject: mergedOptions.learnerProfile?.goal,
+        }
+      );
 
       if (moderationResult.decision !== 'ALLOW') {
         const refusalContent = moderationResult.userExplanation;
@@ -188,9 +353,14 @@ export class AITutorService {
         guardedCallbacks.onChunk?.(refusalContent);
         const refusalResponse: AIResponse = {
           content: refusalContent,
-          source: this.currentMode === 'offline' ? 'local' : this.currentMode === 'online' ? 'cloud' : 'local',
+          source:
+            this.currentMode === 'ollama'
+              ? 'ollama'
+              : this.currentMode === 'offline'
+                ? 'local'
+                : 'cloud',
           model: 'content-safety-guard',
-          elapsedMs: 5
+          elapsedMs: 5,
         };
         guardedCallbacks.onComplete?.(refusalResponse);
         return refusalResponse;
@@ -198,10 +368,11 @@ export class AITutorService {
 
       if (this.currentMode === 'online') {
         return await this.executeOnline(mergedOptions, guardedCallbacks);
+      } else if (this.currentMode === 'ollama') {
+        return await this.executeOllama(mergedOptions, guardedCallbacks);
       } else if (this.currentMode === 'offline') {
         return await this.executeOffline(mergedOptions, guardedCallbacks);
       } else {
-        // Auto mode
         return await this.executeAuto(mergedOptions, guardedCallbacks);
       }
     } finally {
@@ -209,7 +380,7 @@ export class AITutorService {
         this.isGenerating = false;
         this.currentAbortController = null;
         this.activePhase = 'idle';
-        this.notifyStatusChange();
+        void this.notifyStatusChange();
       }
     }
   }
@@ -218,56 +389,78 @@ export class AITutorService {
     options: SendMessageOptions,
     callbacks: AIStreamCallbacks
   ): Promise<AIResponse> {
-    return await cloudAIAdapter.sendChatStream(options, callbacks);
+    return await this.cloud.sendChatStream(options, callbacks);
   }
 
+  /**
+   * Strictly local Ollama execution (Gemma 4).
+   * Never calls cloudAIAdapter even if Ollama is offline or fails.
+   */
+  private async executeOllama(
+    options: SendMessageOptions,
+    callbacks: AIStreamCallbacks
+  ): Promise<AIResponse> {
+    return await this.ollama.sendChatStream(options, callbacks);
+  }
+
+  /**
+   * Strictly local WebLLM execution.
+   * Never calls cloudAIAdapter even if WebLLM is unloaded or fails.
+   */
   private async executeOffline(
     options: SendMessageOptions,
     callbacks: AIStreamCallbacks
   ): Promise<AIResponse> {
-    if (!localWebLLMAdapter.isModelLoaded()) {
+    if (!this.localWebLLM.isModelLoaded()) {
       throw new Error(
-        'Offline Mode Active: Local model is not loaded yet. Click "Load Local Model" to initialize WebGPU inference, or switch mode to Online.'
+        'Offline WebGPU Mode Active: Local browser model is not loaded yet. Click "Load Local Model" to initialize WebGPU inference, or switch to "Ollama — Local AI" or "Online".'
       );
     }
-    // Strictly local inference — zero network requests
-    return await localWebLLMAdapter.sendChatStream(options, callbacks);
+    return await this.localWebLLM.sendChatStream(options, callbacks);
   }
 
   private async executeAuto(
     options: SendMessageOptions,
     callbacks: AIStreamCallbacks
   ): Promise<AIResponse> {
-    const isBrowserOnline = typeof navigator === 'undefined' || navigator.onLine;
+    const isBrowserOnline =
+      typeof navigator === 'undefined' || navigator.onLine;
 
-    // 1. If online, attempt Cloud first
+    // 1. Try Cloud Gemini if browser is online
+    let cloudErrMsg = 'Browser is offline';
     if (isBrowserOnline) {
       try {
-        const cloudResult = await cloudAIAdapter.sendChatStream(options, callbacks);
-        return cloudResult;
-      } catch (cloudErr: any) {
-        console.warn('Auto mode: Cloud inference failed or unreachable, checking local model...', cloudErr);
-
-        // If local model is ready, fall back to local!
-        if (localWebLLMAdapter.isModelLoaded()) {
-          callbacks.onChunk?.('\n\n*(Cloud unavailable. Falling back to local WebGPU AI...)*\n\n');
-          return await localWebLLMAdapter.sendChatStream(options, callbacks);
-        }
-
-        // If local model is not loaded, explain the situation clearly
-        throw new Error(
-          `Cloud AI unavailable (${cloudErr.message}). Local model is not initialized. To enable automatic offline fallback, click "Load Local Model" below.`
-        );
+        return await this.cloud.sendChatStream(options, callbacks);
+      } catch (cloudErr: unknown) {
+        cloudErrMsg =
+          cloudErr instanceof Error ? cloudErr.message : 'Cloud AI unavailable';
       }
     }
 
-    // 2. Browser is offline: attempt local model
-    if (localWebLLMAdapter.isModelLoaded()) {
-      return await localWebLLMAdapter.sendChatStream(options, callbacks);
+    // 2. Try Local Ollama (gemma4:e2b) if running locally
+    const ollamaHealth = await this.ollama.checkHealth(2500);
+    if (ollamaHealth.available) {
+      callbacks.onChunk?.(
+        `\n\n*(Cloud AI unavailable; routing automatically to local Ollama ${ollamaHealth.configuredModel}...)*\n\n`
+      );
+      return await this.ollama.sendChatStream(options, callbacks);
+    }
+
+    // 3. Try Local WebLLM if loaded in browser
+    if (this.localWebLLM.isModelLoaded()) {
+      callbacks.onChunk?.(
+        '\n\n*(Cloud AI unavailable; falling back to local WebGPU model...)*\n\n'
+      );
+      return await this.localWebLLM.sendChatStream(options, callbacks);
     }
 
     throw new Error(
-      'You are currently offline, and the local AI model is not yet loaded into browser memory. Please reconnect to download the local model or use cloud AI.'
+      `Auto Mode could not reach an active AI provider:\n` +
+        `• Cloud Gemini: ${cloudErrMsg}\n` +
+        `• Local Ollama (${ollamaHealth.configuredModel}): ${ollamaHealth.message}${
+          ollamaHealth.recoveryGuidance ? ` (${ollamaHealth.recoveryGuidance})` : ''
+        }\n` +
+        `• Browser WebGPU: Model not loaded.`
     );
   }
 }

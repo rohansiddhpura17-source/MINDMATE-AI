@@ -1,6 +1,13 @@
 import { apiClient, ApiError } from '../api/client';
 import { syncQueue } from './syncQueue';
 import { withStore } from './db';
+import {
+  saveQuizSession,
+  updateProfile,
+  updatePlannerTask,
+  completePlannerTaskActivity,
+  recordStudyActivity,
+} from '../../lib/db';
 
 export interface SyncStatusState {
   isBackendReachable: boolean;
@@ -140,65 +147,100 @@ class SyncManager {
     this.updateState({ isSyncing: true, error: null });
 
     try {
-      // 4. Send batch to server sync endpoint
-      const response = await apiClient<{
-        success: boolean;
-        processedEventIds: string[];
-        conflicts: any[];
-        serverState: any;
-      }>('/api/learner/sync', {
-        method: 'POST',
-        body: JSON.stringify({ events: pendingEvents }),
-      });
+      let processedEventIds: string[] = [];
 
-      if (response.success) {
-        const processedSet = new Set(response.processedEventIds);
-
-        // Acknowledge processed events
+      // Try server API first if reachable
+      try {
+        const response = await apiClient<{
+          success: boolean;
+          processedEventIds: string[];
+          conflicts: any[];
+          serverState: any;
+        }>('/api/learner/sync', {
+          method: 'POST',
+          body: JSON.stringify({ events: pendingEvents }),
+        });
+        if (response?.success && Array.isArray(response.processedEventIds)) {
+          processedEventIds = response.processedEventIds;
+        }
+      } catch (apiErr) {
+        // Fall back to direct Supabase sync
         for (const evt of pendingEvents) {
-          if (processedSet.has(evt.eventId)) {
-            await syncQueue.remove(evt.eventId);
-
-            // Mark quiz attempt as synced in local IndexedDB
+          try {
             if (evt.eventType === 'QUIZ_ATTEMPT') {
-              await withStore('quiz_attempts', 'readwrite', (store) => {
-                const req = store.get(evt.eventId);
-                req.onsuccess = () => {
-                  if (req.result) {
-                    req.result.synced = true;
-                    store.put(req.result);
-                  }
-                };
+              const accuracy = evt.payload.totalQuestions > 0
+                ? Math.round((evt.payload.correctAnswers / evt.payload.totalQuestions) * 100)
+                : 100;
+              await saveQuizSession(userId, {
+                topic: evt.payload.topicName || 'General',
+                score: evt.payload.score || 0,
+                total: evt.payload.totalQuestions || 0,
+                accuracy,
               });
+            } else if (evt.eventType === 'PREFERENCES_UPDATE') {
+              await updateProfile(userId, evt.payload);
+            } else if (evt.eventType === 'STUDY_TASK_COMPLETE') {
+              if (evt.payload.taskId) {
+                await updatePlannerTask(evt.payload.taskId, true);
+                await completePlannerTaskActivity(evt.payload.taskId, userId);
+              }
+            } else if (evt.eventType === 'STUDY_ACTIVITY') {
+              await recordStudyActivity(
+                userId,
+                evt.payload.topicName || 'General',
+                evt.payload.minutes || 15,
+                evt.payload.activityType || 'quiz'
+              );
             }
-          } else {
-            // Event not processed, increment retry count
-            await syncQueue.updateStatus(
-              evt.eventId,
-              'failed',
-              'Server did not acknowledge event'
-            );
+            processedEventIds.push(evt.eventId);
+          } catch (itemErr) {
+            console.warn('[Sync Item Error]', evt.eventId, itemErr);
           }
         }
-
-        const remaining = await syncQueue.getPendingCount(userId);
-        this.updateState({
-          isSyncing: false,
-          pendingCount: remaining,
-          lastSyncTime: new Date(),
-          error: null,
-        });
-
-        return {
-          syncedCount: response.processedEventIds.length,
-          conflicts: response.conflicts || [],
-        };
-      } else {
-        throw new Error('Server returned unsuccessful sync response');
       }
+
+      const processedSet = new Set(processedEventIds);
+
+      // Acknowledge processed events
+      for (const evt of pendingEvents) {
+        if (processedSet.has(evt.eventId)) {
+          await syncQueue.remove(evt.eventId);
+
+          // Mark quiz attempt as synced in local IndexedDB
+          if (evt.eventType === 'QUIZ_ATTEMPT') {
+            await withStore('quiz_attempts', 'readwrite', (store) => {
+              const req = store.get(evt.eventId);
+              req.onsuccess = () => {
+                if (req.result) {
+                  req.result.synced = true;
+                  store.put(req.result);
+                }
+              };
+            });
+          }
+        } else {
+          await syncQueue.updateStatus(
+            evt.eventId,
+            'failed',
+            'Event could not be synchronized'
+          );
+        }
+      }
+
+      const remaining = await syncQueue.getPendingCount(userId);
+      this.updateState({
+        isSyncing: false,
+        pendingCount: remaining,
+        lastSyncTime: new Date(),
+        error: null,
+      });
+
+      return {
+        syncedCount: processedEventIds.length,
+        conflicts: [],
+      };
     } catch (err: any) {
       console.warn('[Sync Error]', err);
-      // Mark events with backoff error
       for (const evt of pendingEvents) {
         const nextRetry = evt.retryCount + 1;
         const msg = nextRetry >= this.maxRetries ? 'Max retries exceeded' : err?.message || 'Sync failed';

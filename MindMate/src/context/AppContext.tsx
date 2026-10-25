@@ -1,9 +1,8 @@
 import React, { createContext, useContext, ReactNode, useState, useEffect } from 'react';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { useToast, ToastMessage } from '../hooks/useToast';
-import { authApi, LoginInput, RegisterInput } from '../services/api/authApi';
-import { apiClient } from '../services/api/client';
-import { syncManager, SyncStatusState } from '../services/storage/syncManager';
+import { supabase, isSupabaseConfigured, SupabaseConfigError } from '../lib/supabase';
+import { updateProfile, getProfile } from '../lib/db';
 
 interface Notification {
   id: number;
@@ -12,219 +11,307 @@ interface Notification {
 }
 
 export interface AuthUser {
-  id?: string;
+  id: string;
   name: string;
   email: string;
-  role?: string;
-  goal?: string | null;
+  goal?: string;
+  avatar?: string;
+  bio?: string;
 }
 
 interface AppContextType {
-  // Auth
   user: AuthUser | null;
   isAuthenticated: boolean;
-  isLoadingUser: boolean;
-  login: (user: AuthUser) => void;
-  loginWithCredentials: (credentials: LoginInput) => Promise<AuthUser>;
-  registerWithCredentials: (data: RegisterInput) => Promise<AuthUser>;
+  isAuthLoading: boolean;
+  login: (email: string, password: string) => Promise<void>;
+  register: (data: { name: string; email: string; password: string; goal?: string }) => Promise<void>;
   logout: () => Promise<void>;
-  // Online & Sync status
+  updateUser: (data: Partial<AuthUser>) => Promise<void>;
   isOnline: boolean;
   toggleOnline: () => void;
-  syncState: SyncStatusState;
-  triggerSync: () => Promise<any>;
-  // Notifications
   notifications: Notification[];
-  // Toasts
   toasts: ToastMessage[];
   showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   removeToast: (id: string) => void;
-  // Modal
   activeModal: string | null;
   setActiveModal: (modalId: string | null) => void;
+  sidebarWidth: number;
+  setSidebarWidth: (w: number) => void;
+  isSidebarCollapsed: boolean;
+  toggleSidebarCollapse: () => void;
+  isMobileNavOpen: boolean;
+  setIsMobileNavOpen: (open: boolean) => void;
+  toggleMobileNav: () => void;
+  isDraggingSidebar: boolean;
+  setIsDraggingSidebar: (dragging: boolean) => void;
+  language: string;
+  setLanguage: (lang: string) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const { isOnline: manualOnline, toggleOnline } = useOnlineStatus();
+  const { isOnline, toggleOnline } = useOnlineStatus();
   const { toasts, showToast, removeToast } = useToast();
   const [activeModal, setActiveModal] = useState<string | null>(null);
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [isLoadingUser, setIsLoadingUser] = useState(true);
-  const [syncState, setSyncState] = useState<SyncStatusState>({
-    isBackendReachable: true,
-    isSyncing: false,
-    pendingCount: 0,
-    lastSyncTime: null,
-    error: null,
-    activeUserId: null,
+
+  // Sidebar resizable & collapsible state
+  const [sidebarWidth, setSidebarWidthState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('mindmate_sidebar_width');
+      return saved ? Math.max(200, Math.min(360, parseInt(saved, 10))) : 240;
+    } catch {
+      return 240;
+    }
   });
 
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-
-  // Aggregate authentic notifications (friend requests, challenge invites)
-  useEffect(() => {
-    let isCancelled = false;
-    async function loadRealNotifications() {
-      if (!user?.id) {
-        setNotifications([]);
-        return;
-      }
-
-      try {
-        const items: Notification[] = [];
-        let notifId = 1;
-
-        // 1. Incoming friend requests
-        const friendsRes = await apiClient<{ success?: boolean; receivedRequests?: any[] }>(
-          '/api/social/friends'
-        ).catch(() => null);
-        if (friendsRes?.receivedRequests && Array.isArray(friendsRes.receivedRequests)) {
-          for (const req of friendsRes.receivedRequests) {
-            items.push({
-              id: notifId++,
-              text: `${req.requester?.name || 'A learner'} sent you a friend request`,
-              isRead: false,
-            });
-          }
-        }
-
-        // 2. Incoming quiz challenges
-        const challengesRes = await apiClient<{ challenges?: any[] }>(
-          '/api/social/challenges'
-        ).catch(() => null);
-        if (challengesRes?.challenges && Array.isArray(challengesRes.challenges)) {
-          const pendingIncoming = challengesRes.challenges.filter(
-            (c: any) => c.status === 'PENDING' && c.opponentId === user.id
-          );
-          for (const ch of pendingIncoming) {
-            items.push({
-              id: notifId++,
-              text: `${ch.challenger?.name || 'A friend'} challenged you to an adaptive quiz duel!`,
-              isRead: false,
-            });
-          }
-        }
-
-        if (!isCancelled) {
-          setNotifications(items);
-        }
-      } catch {
-        if (!isCancelled) {
-          setNotifications([]);
-        }
-      }
+  const [isSidebarCollapsed, setIsSidebarCollapsedState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mindmate_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
     }
+  });
 
-    loadRealNotifications();
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
 
-    return () => {
-      isCancelled = true;
-    };
-  }, [user?.id]);
+  const setSidebarWidth = (w: number) => {
+    const clamped = Math.max(200, Math.min(360, w));
+    setSidebarWidthState(clamped);
+    try {
+      localStorage.setItem('mindmate_sidebar_width', clamped.toString());
+    } catch {}
+  };
 
-  // Subscribe to syncManager state
-  useEffect(() => {
-    const unsubscribe = syncManager.subscribe((s) => {
-      setSyncState(s);
+  const toggleSidebarCollapse = () => {
+    setIsSidebarCollapsedState(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('mindmate_sidebar_collapsed', next.toString());
+      } catch {}
+      return next;
     });
-    syncManager.startPeriodicSync(30000);
+  };
 
-    return () => {
-      unsubscribe();
-      syncManager.stopPeriodicSync();
-    };
-  }, []);
+  const toggleMobileNav = () => {
+    setIsMobileNavOpen(prev => !prev);
+  };
 
-  // Restore authenticated session from HTTP-only cookie on mount
-  useEffect(() => {
-    let mounted = true;
-    async function restoreSession() {
-      try {
-        const response = await authApi.getMe();
-        if (mounted && response.success && response.user) {
-          setUser(response.user);
-          syncManager.setActiveUser(response.user.id);
-          // Proactively attempt synchronization upon session restoration
-          syncManager.checkAndSync();
-        }
-      } catch (err) {
-        if (mounted) {
-          setUser(null);
-          syncManager.setActiveUser(null);
-        }
-      } finally {
-        if (mounted) {
-          setIsLoadingUser(false);
-        }
-      }
+  const [language, setLanguageState] = useState<string>(() => {
+    try {
+      return localStorage.getItem('mindmate_language') || 'en';
+    } catch {
+      return 'en';
     }
-    restoreSession();
+  });
+
+  const setLanguage = (lang: string) => {
+    setLanguageState(lang);
+    try {
+      localStorage.setItem('mindmate_language', lang);
+    } catch {}
+  };
+
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  const [notifications] = useState<Notification[]>([
+    { id: 1, text: 'New insight available on OOP', isRead: false },
+    { id: 2, text: 'Sarah K. challenged you to an Adaptive Battle', isRead: false },
+    { id: 3, text: 'You completed your daily goal!', isRead: true },
+  ]);
+
+  // Apply saved theme on startup
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('mindmate_theme') || 'light';
+    document.documentElement.dataset.theme = savedTheme;
+  }, []);
+
+  useEffect(() => {
+    // Without Supabase credentials there is no session to restore; finish loading
+    // immediately so public routes render and protected routes redirect to /login.
+    if (!isSupabaseConfigured) {
+      setIsAuthLoading(false);
+      return;
+    }
+
+    // Safety net: never leave the app stuck on the auth spinner if Supabase is
+    // unreachable (e.g. wrong URL, offline, DNS failure).
+    const authLoadingTimeout = setTimeout(() => {
+      console.warn('[MindMate] Supabase session check timed out; continuing as signed out.');
+      setIsAuthLoading(false);
+    }, 8000);
+
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session?.user) {
+        let avatar = session.user.user_metadata?.avatar;
+        let goal = session.user.user_metadata?.goal;
+        let bio = session.user.user_metadata?.bio;
+
+        // Try reading profile from Supabase profiles table
+        try {
+          const profileRes = await getProfile(session.user.id);
+          if (profileRes.data) {
+            avatar = (profileRes.data as any).avatar || avatar;
+            goal = profileRes.data.goal || goal;
+            bio = (profileRes.data as any).bio || bio;
+          }
+        } catch {
+          // Continue with session metadata
+        }
+
+        setUser({
+          id: session.user.id,
+          name: session.user.user_metadata.name || session.user.email?.split('@')[0],
+          email: session.user.email!,
+          goal,
+          avatar: avatar || '/avatars/avatar-01.webp',
+          bio,
+        });
+      }
+    }).catch((err) => {
+      console.warn('[MindMate] Failed to restore Supabase session:', err);
+    }).finally(() => {
+      clearTimeout(authLoadingTimeout);
+      setIsAuthLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (session?.user) {
+        let avatar = session.user.user_metadata?.avatar;
+        let goal = session.user.user_metadata?.goal;
+        let bio = session.user.user_metadata?.bio;
+
+        try {
+          const profileRes = await getProfile(session.user.id);
+          if (profileRes.data) {
+            avatar = (profileRes.data as any).avatar || avatar;
+            goal = profileRes.data.goal || goal;
+            bio = (profileRes.data as any).bio || bio;
+          }
+        } catch {}
+
+        setUser({
+          id: session.user.id,
+          name: session.user.user_metadata.name || session.user.email?.split('@')[0],
+          email: session.user.email!,
+          goal,
+          avatar: avatar || '/avatars/avatar-01.webp',
+          bio,
+        });
+      } else {
+        setUser(null);
+      }
+      setIsAuthLoading(false);
+    });
+
     return () => {
-      mounted = false;
+      clearTimeout(authLoadingTimeout);
+      subscription.unsubscribe();
     };
   }, []);
 
-  const login = (authUser: AuthUser) => {
-    setUser(authUser);
-    if (authUser.id) syncManager.setActiveUser(authUser.id);
+  const login = async (email: string, password: string) => {
+    if (!isSupabaseConfigured) throw new SupabaseConfigError();
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
   };
 
-  const loginWithCredentials = async (credentials: LoginInput): Promise<AuthUser> => {
-    const res = await authApi.login(credentials);
-    setUser(res.user);
-    syncManager.setActiveUser(res.user.id);
-    syncManager.checkAndSync();
-    return res.user;
-  };
-
-  const registerWithCredentials = async (data: RegisterInput): Promise<AuthUser> => {
-    const res = await authApi.register(data);
-    setUser(res.user);
-    syncManager.setActiveUser(res.user.id);
-    syncManager.checkAndSync();
-    return res.user;
+  const register = async (data: {
+    name: string;
+    email: string;
+    password: string;
+    goal?: string;
+  }) => {
+    if (!isSupabaseConfigured) throw new SupabaseConfigError();
+    const { error } = await supabase.auth.signUp({
+      email: data.email,
+      password: data.password,
+      options: {
+        data: {
+          name: data.name,
+          goal: data.goal,
+          avatar: '/avatars/avatar-01.webp',
+        },
+      },
+    });
+    if (error) throw error;
   };
 
   const logout = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+  };
+
+  const updateUser = async (data: Partial<AuthUser>) => {
+    if (!user) return;
+
+    // Optimistically update local state
+    const updated = { ...user, ...data };
+    setUser(updated);
     try {
-      await authApi.logout();
-    } catch (e) {
-      console.warn('[Logout Error]', e);
-    } finally {
-      setUser(null);
-      syncManager.setActiveUser(null);
+      localStorage.setItem('mindmate_user', JSON.stringify(updated));
+    } catch {}
+
+    // Persist to Supabase Auth metadata
+    try {
+      await supabase.auth.updateUser({
+        data: {
+          name: updated.name,
+          goal: updated.goal,
+          avatar: updated.avatar,
+          bio: updated.bio,
+        },
+      });
+    } catch (err) {
+      console.warn('Failed to update Supabase Auth metadata:', err);
+    }
+
+    // Persist to Supabase profiles table
+    try {
+      await updateProfile(user.id, {
+        name: updated.name,
+        goal: updated.goal,
+        avatar: updated.avatar,
+        bio: updated.bio,
+      } as any);
+    } catch (err) {
+      console.warn('Failed to update Supabase profiles table:', err);
     }
   };
-
-  const triggerSync = async () => {
-    return syncManager.syncNow();
-  };
-
-  // Online only when both user toggle is online AND backend is reachable
-  const effectiveOnline = manualOnline && syncState.isBackendReachable;
 
   return (
     <AppContext.Provider
       value={{
         user,
         isAuthenticated: user !== null,
-        isLoadingUser,
+        isAuthLoading,
         login,
-        loginWithCredentials,
-        registerWithCredentials,
+        register,
         logout,
-        isOnline: effectiveOnline,
+        updateUser,
+        isOnline,
         toggleOnline,
-        syncState,
-        triggerSync,
         notifications,
         toasts,
         showToast,
         removeToast,
         activeModal,
         setActiveModal,
+        sidebarWidth,
+        setSidebarWidth,
+        isSidebarCollapsed,
+        toggleSidebarCollapse,
+        isMobileNavOpen,
+        setIsMobileNavOpen,
+        toggleMobileNav,
+        isDraggingSidebar,
+        setIsDraggingSidebar,
+        language,
+        setLanguage,
       }}
     >
       {children}

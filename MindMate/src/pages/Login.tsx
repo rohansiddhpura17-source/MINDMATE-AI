@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Brain, Eye, EyeOff, ArrowRight, Sparkles } from 'lucide-react';
+import { Brain, Eye, EyeOff, ArrowRight, Sparkles, Mail, Lock } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
+import SupabaseSetupNotice from '../components/ui/SupabaseSetupNotice';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { loginWithCredentials, registerWithCredentials } = useAppContext();
+  const { login } = useAppContext();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -24,50 +25,23 @@ export default function Login() {
 
     setLoading(true);
     try {
-      await loginWithCredentials({ email: email.trim(), password });
+      await login(email.trim(), password);
       navigate('/home');
     } catch (err: any) {
-      setError(err?.message || 'Login failed. Please verify your credentials.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDemo = async () => {
-    setLoading(true);
-    setError('');
-    const demoEmail = 'alex@mindmate.app';
-    const demoPassword = 'DemoPassword123!';
-    try {
-      // Attempt login first
-      await loginWithCredentials({ email: demoEmail, password: demoPassword });
-      navigate('/home');
-    } catch (err) {
-      // If demo user does not exist yet in DB, create it
-      try {
-        await registerWithCredentials({
-          name: 'Alex Johnson',
-          email: demoEmail,
-          password: demoPassword,
-          goal: 'cs-exam',
-        });
-        navigate('/home');
-      } catch (regErr: any) {
-        setError(regErr?.message || 'Unable to start demo session.');
-      }
+      setError(err.message || 'Invalid email or password.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#f8f7ff] font-['Inter',sans-serif] flex">
+    <div className="min-h-screen bg-background font-['Inter',sans-serif] flex text-dark">
       {/* ── Left panel ─────────────────────────────────────── */}
-      <div className="hidden lg:flex lg:w-[480px] xl:w-[560px] shrink-0 bg-indigo-600 flex-col justify-between p-12 relative overflow-hidden">
+      <div className="hidden lg:flex lg:w-[480px] xl:w-[560px] shrink-0 bg-primary flex-col justify-between p-12 relative overflow-hidden text-white">
         {/* Background decoration */}
         <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute -top-20 -left-20 w-80 h-80 bg-violet-500/30 rounded-full blur-3xl" />
-          <div className="absolute bottom-0 right-0 w-72 h-72 bg-indigo-800/40 rounded-full blur-3xl" />
+          <div className="absolute -top-20 -left-20 w-80 h-80 bg-violet-400/20 rounded-full blur-3xl" />
+          <div className="absolute bottom-0 right-0 w-72 h-72 bg-indigo-900/40 rounded-full blur-3xl" />
         </div>
 
         {/* Logo */}
@@ -120,75 +94,71 @@ export default function Login() {
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-12">
         {/* Mobile logo */}
         <div className="lg:hidden flex items-center gap-2.5 mb-10">
-          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">
+          <div className="bg-primary text-white p-1.5 rounded-xl">
             <Brain className="h-5 w-5" />
           </div>
-          <span className="font-bold text-[#0f172a] text-lg">MindMate</span>
+          <span className="font-bold text-dark text-lg">MindMate</span>
         </div>
 
         <div className="w-full max-w-sm">
           <div className="mb-8">
-            <h1 className="text-2xl font-extrabold text-[#0f172a] mb-1.5">Welcome back</h1>
-            <p className="text-slate-500 text-sm">Log in to continue with your Learning Twin.</p>
+            <h1 className="text-2xl font-extrabold text-dark mb-1.5">Welcome back</h1>
+            <p className="text-muted text-sm">Log in to continue with your Learning Twin.</p>
           </div>
 
-          {/* Demo shortcut */}
-          <button
-            onClick={handleDemo}
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-2 border border-indigo-200 bg-indigo-50 text-indigo-700 font-semibold text-sm py-2.5 rounded-[10px] hover:bg-indigo-100 transition-colors mb-6 disabled:opacity-60"
-          >
-            <Sparkles className="h-4 w-4" />
-            Continue as Demo User (Alex)
-          </button>
-
-          <div className="flex items-center gap-3 mb-6">
-            <div className="flex-1 h-px bg-[#e2e0f0]" />
-            <span className="text-xs text-slate-400 font-medium">or log in with email</span>
-            <div className="flex-1 h-px bg-[#e2e0f0]" />
-          </div>
+          <SupabaseSetupNotice />
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Email */}
             <div>
-              <label className="block text-sm font-medium text-[#0f172a] mb-1.5" htmlFor="email">
+              <label className="block text-sm font-medium text-dark mb-1.5" htmlFor="email">
                 Email address
               </label>
-              <input
-                id="email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="alex@example.com"
-                className="w-full h-10 px-3.5 rounded-[10px] border border-[#e2e0f0] bg-white text-[#0f172a] text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-              />
+              <div className="relative">
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="alex@example.com"
+                  className="w-full h-11 px-3.5 pl-10 rounded-xl border border-border bg-surface text-dark text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
+                />
+                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted" />
+              </div>
             </div>
 
             {/* Password */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-sm font-medium text-[#0f172a]" htmlFor="password">
+                <label className="text-sm font-medium text-dark" htmlFor="password">
                   Password
                 </label>
-                <button type="button" className="text-xs text-indigo-600 hover:underline font-medium">
+                <Link
+                  to="/forgot-password"
+                  className="text-xs text-primary hover:underline font-medium"
+                >
                   Forgot password?
-                </button>
+                </Link>
               </div>
               <div className="relative">
                 <input
                   id="password"
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
+                  required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full h-10 px-3.5 pr-10 rounded-[10px] border border-[#e2e0f0] bg-white text-[#0f172a] text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                  className="w-full h-11 px-3.5 pl-10 pr-10 rounded-xl border border-border bg-surface text-dark text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
                 />
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted" />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-dark transition-colors"
+                  title={showPassword ? 'Hide password' : 'Show password'}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
@@ -197,7 +167,7 @@ export default function Login() {
 
             {/* Error */}
             {error && (
-              <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-[10px] px-3.5 py-2.5">
+              <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800/40 rounded-xl px-3.5 py-2.5">
                 {error}
               </div>
             )}
@@ -206,7 +176,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white font-semibold text-sm py-2.5 rounded-[10px] hover:bg-indigo-700 transition-colors disabled:opacity-60 mt-2"
+              className="w-full flex items-center justify-center gap-2 bg-primary text-white font-semibold text-sm py-2.5 rounded-xl hover:bg-primary/90 transition-colors disabled:opacity-60 shadow-sm mt-2"
             >
               {loading ? (
                 <span className="flex items-center gap-2">
@@ -222,9 +192,9 @@ export default function Login() {
             </button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-slate-500">
+          <p className="mt-6 text-center text-sm text-muted">
             Don't have an account?{' '}
-            <Link to="/register" className="text-indigo-600 font-semibold hover:underline">
+            <Link to="/register" className="text-primary font-semibold hover:underline">
               Create one free
             </Link>
           </p>

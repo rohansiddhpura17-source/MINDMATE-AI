@@ -9,15 +9,27 @@ interface PracticeCardProps {
   timeEstimate: string;
   icon: LucideIcon;
   colorClass: string;
+  path?: string;
+  onClick?: () => void;
 }
 
-export function PracticeCard({ title, description, timeEstimate, icon: Icon, colorClass }: PracticeCardProps) {
+export function PracticeCard({ title, description, timeEstimate, icon: Icon, colorClass, path, onClick }: PracticeCardProps) {
   const navigate = useNavigate();
 
+  const handleClick = () => {
+    if (onClick) {
+      onClick();
+    } else if (path) {
+      navigate(path);
+    } else {
+      navigate('/practice/quiz');
+    }
+  };
+
   return (
-    <Card 
+    <Card
       className="p-5 cursor-pointer hover:shadow-md transition-shadow group flex flex-col h-full"
-      onClick={() => navigate('/practice/quiz')}
+      onClick={handleClick}
     >
       <div className="flex items-start justify-between mb-4">
         <div className={`p-3 rounded-xl bg-opacity-10 ${colorClass.replace('text-', 'bg-')} ${colorClass} group-hover:scale-110 transition-transform`}>

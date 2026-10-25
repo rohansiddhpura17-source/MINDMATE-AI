@@ -105,7 +105,7 @@ export interface VisualGenerationContext {
   question: string;
   answer: string;
   subject: string;
-  mode: 'online' | 'offline' | 'auto';
+  mode: 'online' | 'offline' | 'ollama' | 'auto';
   isOnline: boolean;
   previousQuestion?: string;
   previousAnswer?: string;
