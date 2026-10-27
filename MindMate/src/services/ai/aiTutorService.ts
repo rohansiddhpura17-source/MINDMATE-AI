@@ -375,11 +375,19 @@ export class AITutorService {
       } else {
         return await this.executeAuto(mergedOptions, guardedCallbacks);
       }
+    } catch (err: any) {
+      if (requestId === this.activeRequestId) {
+        this.activePhase = 'failed';
+        guardedCallbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+      throw err;
     } finally {
       if (requestId === this.activeRequestId) {
         this.isGenerating = false;
         this.currentAbortController = null;
-        this.activePhase = 'idle';
+        if (this.activePhase !== 'failed') {
+          this.activePhase = 'idle';
+        }
         void this.notifyStatusChange();
       }
     }

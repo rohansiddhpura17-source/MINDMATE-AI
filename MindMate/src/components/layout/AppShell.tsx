@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { useAppContext } from '../../context/AppContext';
 import { ToastContainer } from '../ui/Toast';
 import { AlertCircle } from 'lucide-react';
+import { cn } from '../../utils';
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -14,44 +15,23 @@ interface AppShellProps {
 export function AppShell({ children, pageTitle, pageSubtitle }: AppShellProps) {
   const {
     isOnline,
-    sidebarWidth,
-    isSidebarCollapsed,
-    isDraggingSidebar
+    isSidebarCollapsed
   } = useAppContext();
-
-  // Track if current screen is desktop (>= 768px)
-  const [isDesktop, setIsDesktop] = useState(
-    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
-  );
-
-  useEffect(() => {
-    const handleResize = () => {
-      setIsDesktop(window.innerWidth >= 768);
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  const currentSidebarWidth = isSidebarCollapsed ? 70 : sidebarWidth;
-  const contentMarginLeft = isDesktop ? currentSidebarWidth : 0;
 
   return (
     <div className="min-h-screen bg-background flex text-dark font-['Inter',sans-serif] overflow-x-hidden">
       <Sidebar />
       <div
-        style={{
-          marginLeft: `${contentMarginLeft}px`,
-          width: isDesktop ? `calc(100vw - ${currentSidebarWidth}px)` : '100%'
-        }}
-        className={`flex-1 flex flex-col min-h-screen max-w-full overflow-x-hidden ${
-          !isDraggingSidebar ? 'transition-[margin-left,width] duration-200' : ''
-        }`}
+        className={cn(
+          "flex-1 flex flex-col min-h-screen w-full min-w-0 overflow-x-hidden transition-[margin-left] duration-200",
+          isSidebarCollapsed ? "md:ml-[72px]" : "md:ml-64"
+        )}
       >
         <Header title={pageTitle} subtitle={pageSubtitle} />
 
         {!isOnline && (
-          <div className="bg-warning text-yellow-900 px-6 py-2 flex items-center justify-center gap-2 text-sm font-medium z-20 shadow-sm relative">
-            <AlertCircle className="h-4 w-4" />
+          <div className="bg-[#FFFBEB] text-[#92400E] border-b border-[#FDE68A] px-6 py-2 flex items-center justify-center gap-2 text-sm font-semibold z-20 shadow-xs relative">
+            <AlertCircle className="h-4 w-4 shrink-0" />
             You're offline. Core learning features are still available.
           </div>
         )}

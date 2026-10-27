@@ -180,8 +180,9 @@ export interface SessionAdaptationDelta {
 export interface LearnerAnalyticsSnapshot {
   userId: string | null;
   isSupabaseConfigured: boolean;
-  dataSource: 'cloud_and_local' | 'local_only' | 'unauthenticated';
+  dataSource: 'cloud_and_local' | 'local_only' | 'unauthenticated' | 'demo';
   syncError: string | null;
+  isDemoMode?: boolean;
   totalAttempts: number;
   totalCorrect: number;
   overallAccuracy: number;

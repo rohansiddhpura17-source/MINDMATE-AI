@@ -8,6 +8,11 @@ import {
 import { analyzeRecurringMistakes } from './mistakeAnalyzer';
 import { generateEvidenceRecommendations } from './recommendationEngine';
 import { determineNextLearningAction } from '../adaptive/adaptiveLearningEngine';
+import {
+  isDemoModeActive,
+  getDemoAttempts,
+  saveDemoAttempts,
+} from '../demo/demoLearnerService';
 import type {
   AttemptRecord,
   AttemptType,
@@ -26,10 +31,14 @@ function getStorageKey(userId: string): string {
 
 /**
  * Safely read stored attempts from localStorage (works in both browser and Node test environments).
+ * If demo mode is active, reads from the isolated demo dataset so real attempts are never modified.
  */
 export function readLocalAttempts(userId: string): AttemptRecord[] {
   try {
     if (typeof localStorage === 'undefined') return [];
+    if (isDemoModeActive(userId)) {
+      return getDemoAttempts(userId);
+    }
     const raw = localStorage.getItem(getStorageKey(userId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
@@ -42,10 +51,15 @@ export function readLocalAttempts(userId: string): AttemptRecord[] {
 
 /**
  * Safely write attempts to localStorage.
+ * If demo mode is active, writes exclusively to the demo store without polluting real user data.
  */
 export function writeLocalAttempts(userId: string, attempts: AttemptRecord[]): void {
   try {
     if (typeof localStorage === 'undefined') return;
+    if (isDemoModeActive(userId)) {
+      saveDemoAttempts(userId, attempts);
+      return;
+    }
     localStorage.setItem(getStorageKey(userId), JSON.stringify(attempts));
   } catch {
     // Ignore storage quota errors in restricted environments
@@ -482,8 +496,9 @@ export function buildLearnerAnalyticsSnapshot(
   attempts: AttemptRecord[],
   options?: {
     isSupabaseConfigured?: boolean;
-    dataSource?: 'cloud_and_local' | 'local_only' | 'unauthenticated';
+    dataSource?: 'cloud_and_local' | 'local_only' | 'unauthenticated' | 'demo';
     syncError?: string | null;
+    isDemoMode?: boolean;
     nowIso?: string;
   }
 ): LearnerAnalyticsSnapshot {
@@ -523,17 +538,22 @@ export function buildLearnerAnalyticsSnapshot(
         )
       : 0;
 
+  const isDemo = options?.isDemoMode ?? (userId ? isDemoModeActive(userId) : isDemoModeActive());
+
   return {
     userId,
     isSupabaseConfigured: configured,
     dataSource:
       options?.dataSource ??
-      (!userId
+      (isDemo
+        ? 'demo'
+        : !userId
         ? 'unauthenticated'
         : configured
           ? 'cloud_and_local'
           : 'local_only'),
     syncError: options?.syncError ?? null,
+    isDemoMode: isDemo,
     totalAttempts,
     totalCorrect,
     overallAccuracy,
@@ -553,11 +573,23 @@ export function buildLearnerAnalyticsSnapshot(
 /**
  * Load the authoritative LearnerAnalyticsSnapshot for a user, merging local attempts
  * with Supabase cloud attempts (when configured). Never invents fake data.
+ * When demo mode is active, serves the isolated demonstration dataset.
  */
 export async function loadLearnerAnalytics(
   userId?: string | null
 ): Promise<LearnerAnalyticsSnapshot> {
-  const effectiveUserId = userId || 'guest';
+  const effectiveUserId = userId || 'meet8kotecha';
+
+  if (isDemoModeActive(effectiveUserId)) {
+    const demoAttempts = getDemoAttempts(effectiveUserId);
+    return buildLearnerAnalyticsSnapshot(effectiveUserId, demoAttempts, {
+      isSupabaseConfigured: false,
+      dataSource: 'demo',
+      isDemoMode: true,
+      syncError: null,
+    });
+  }
+
   const localAttempts = readLocalAttempts(effectiveUserId);
 
   if (!isSupabaseConfigured || !userId || userId === 'guest') {

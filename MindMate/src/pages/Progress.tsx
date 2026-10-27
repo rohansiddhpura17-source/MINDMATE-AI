@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AppShell } from '../components/layout/AppShell';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -26,11 +26,18 @@ import {
   CheckCircle2,
   Clock,
   HelpCircle,
+  RotateCcw,
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { useMastery } from '../hooks/useMastery';
 import { retryUnsyncedAttempts } from '../services/assessment/assessmentService';
 import { STRATEGY_LABELS } from '../services/adaptive/adaptiveLearningEngine';
+import {
+  isDemoModeActive,
+  loadDemoProgress,
+  clearDemoProgress,
+  DEMO_MODE_CHANGED_EVENT,
+} from '../services/demo/demoLearnerService';
 
 function buildSevenDayAttemptChart(
   attempts: Array<{ attempted_at: string; is_correct: boolean }>
@@ -65,10 +72,33 @@ function buildSevenDayAttemptChart(
 
 export default function Progress() {
   const navigate = useNavigate();
-  const { user } = useAppContext();
+  const { user, showToast } = useAppContext();
   const { snapshot, loading, refresh } = useMastery();
   const [syncing, setSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [demoActive, setDemoActive] = useState(() => isDemoModeActive(user?.id));
+
+  useEffect(() => {
+    const handleDemoChange = (e: any) => {
+      setDemoActive(Boolean(e.detail?.active));
+    };
+    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+    return () => window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+  }, []);
+
+  const handleLoadDemo = () => {
+    const res = loadDemoProgress(user?.id);
+    setDemoActive(true);
+    void refresh();
+    showToast(`Loaded ${res.attemptsCount} demo question attempts across 8 topics.`, 'success');
+  };
+
+  const handleClearDemo = () => {
+    clearDemoProgress(user?.id);
+    setDemoActive(false);
+    void refresh();
+    showToast('Demo data cleared. Returned to genuine learner records.', 'info');
+  };
 
   const handleRetrySync = async () => {
     setSyncing(true);
@@ -100,30 +130,38 @@ export default function Progress() {
         <div
           role="status"
           aria-live="polite"
-          className={`flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl border text-xs ${
-            snapshot.syncError
-              ? 'border-red-500/30 bg-red-500/10 text-red-800 dark:text-red-300'
+          className={`flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl border text-xs font-medium ${
+            demoActive || snapshot.isDemoMode
+              ? 'border-amber-200 bg-amber-50/90 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200'
+              : snapshot.syncError
+              ? 'border-[#FECACA] bg-[#FEF2F2] text-[#B91C1C]'
               : snapshot.dataSource === 'cloud_and_local'
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
-                : 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300'
+                ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#047857]'
+                : 'border-[#BFDBFE] bg-[#EFF6FF] text-[#1D4ED8]'
           }`}
         >
           <div className="flex items-center gap-2.5">
-            {snapshot.dataSource === 'cloud_and_local' ? (
+            {demoActive || snapshot.isDemoMode ? (
+              <div className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+            ) : snapshot.dataSource === 'cloud_and_local' ? (
               <Cloud className="h-4 w-4 shrink-0" />
             ) : (
               <HardDrive className="h-4 w-4 shrink-0" />
             )}
             <div>
               <span className="font-bold">
-                {snapshot.dataSource === 'cloud_and_local'
+                {demoActive || snapshot.isDemoMode
+                  ? 'SIMULATED DEMO DATA ACTIVE: '
+                  : snapshot.dataSource === 'cloud_and_local'
                   ? 'Cloud + Local Persistence Active: '
                   : !snapshot.isSupabaseConfigured
                     ? 'Local Persistence Mode (Supabase Not Configured): '
                     : 'Local Device Storage: '}
               </span>
               <span>
-                {snapshot.syncError
+                {demoActive || snapshot.isDemoMode
+                  ? `Displaying simulated 14-day history for ${user?.name || 'meet8kotecha'} (41 attempts across 8 topics). Simulated results are not verified evidence of actual learning. Real learner records are untouched.`
+                  : snapshot.syncError
                   ? `Cloud sync encountered an error (${snapshot.syncError}). Showing verified local attempts.`
                   : !snapshot.isSupabaseConfigured
                     ? 'All quiz attempts and mastery metrics are saved in local storage on this Mac.'
@@ -134,13 +172,32 @@ export default function Progress() {
           </div>
 
           <div className="flex items-center gap-2">
-            {snapshot.isSupabaseConfigured && user && (
+            {demoActive || snapshot.isDemoMode ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleClearDemo}
+                className="h-8 text-xs font-semibold bg-white dark:bg-slate-800 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/60 shadow-xs cursor-pointer"
+              >
+                <RotateCcw className="h-3 w-3 mr-1" /> Clear Demo Data
+              </Button>
+            ) : snapshot.totalAttempts === 0 ? (
+              <Button
+                size="sm"
+                onClick={handleLoadDemo}
+                className="h-8 text-xs font-semibold shadow-xs cursor-pointer"
+              >
+                <Sparkles className="h-3 w-3 mr-1" /> Load Demo Progress
+              </Button>
+            ) : null}
+
+            {snapshot.isSupabaseConfigured && user && !demoActive && !snapshot.isDemoMode && (
               <Button
                 size="sm"
                 variant="secondary"
                 onClick={handleRetrySync}
                 disabled={syncing || loading}
-                className="h-8 text-xs flex items-center gap-1.5"
+                className="h-8 text-xs flex items-center gap-1.5 cursor-pointer"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
                 {syncing ? 'Syncing...' : 'Sync Pending Attempts'}
@@ -151,7 +208,7 @@ export default function Progress() {
               variant="ghost"
               onClick={() => void refresh()}
               disabled={loading}
-              className="h-8 text-xs flex items-center gap-1"
+              className="h-8 text-xs flex items-center gap-1 cursor-pointer"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
               Refresh
@@ -183,9 +240,9 @@ export default function Progress() {
             </span>
           </Card>
 
-          <Card className="p-5 border border-border">
+          <Card className="p-5 border border-[#E2E8F0]">
             <span className="text-xs text-muted font-medium block">Assessed Mastery Avg</span>
-            <span className="text-2xl font-bold text-purple-600 mt-1 block">
+            <span className="text-2xl font-bold text-[#047857] mt-1 block">
               {snapshot.assessedTopicsCount > 0 ? `${snapshot.averageMastery}%` : '—'}
             </span>
             <span className="text-[11px] text-muted">
@@ -193,9 +250,9 @@ export default function Progress() {
             </span>
           </Card>
 
-          <Card className="p-5 border border-border">
+          <Card className="p-5 border border-[#E2E8F0]">
             <span className="text-xs text-muted font-medium block">Active Mistake Patterns</span>
-            <span className="text-2xl font-bold text-amber-500 mt-1 block">
+            <span className="text-2xl font-bold text-[#92400E] mt-1 block">
               {snapshot.mistakePatterns.length}
             </span>
             <span className="text-[11px] text-muted">
@@ -430,8 +487,8 @@ export default function Progress() {
           {/* Right Col - Priority Focus, Mistake Patterns & 7-Day Activity */}
           <div className="lg:col-span-2 space-y-8">
             {weakestAssessed && (
-              <Card className="p-6 border-red-200 dark:border-red-900/50 bg-red-50/30 dark:bg-red-950/20">
-                <div className="flex items-center gap-2 text-danger font-semibold mb-3">
+              <Card className="p-6 border border-[#FECACA] bg-[#FEF2F2]">
+                <div className="flex items-center gap-2 text-[#B91C1C] font-semibold mb-3">
                   <AlertTriangle className="h-5 w-5" /> Priority Focus Area
                 </div>
                 <h3 className="text-xl font-bold text-dark mb-1">
@@ -442,7 +499,7 @@ export default function Progress() {
                 </p>
                 <ProgressBar
                   value={weakestAssessed.masteryScore}
-                  colorClass="bg-danger"
+                  colorClass="bg-[#B91C1C]"
                   className="mb-5"
                 />
                 <div className="flex flex-col gap-2">
@@ -490,8 +547,8 @@ export default function Progress() {
               </div>
 
               {snapshot.mistakePatterns.length === 0 ? (
-                <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20 text-xs text-muted flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                <div className="p-4 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] text-xs text-[#047857] font-medium flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-[#047857] shrink-0" />
                   <span>
                     {snapshot.totalAttempts === 0
                       ? 'No incorrect attempts recorded yet.'
@@ -634,10 +691,10 @@ export default function Progress() {
                       <td className="py-2.5 pr-4">Lvl {att.difficulty}/5</td>
                       <td className="py-2.5 pr-4">
                         <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full font-semibold ${
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full font-semibold border ${
                             att.is_correct
-                              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                              : 'bg-red-500/10 text-red-700 dark:text-red-300'
+                              ? 'bg-[#ECFDF5] text-[#047857] border-[#A7F3D0]'
+                              : 'bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA]'
                           }`}
                         >
                           {att.is_correct ? 'Correct' : 'Incorrect'}

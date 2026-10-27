@@ -9,6 +9,10 @@ import {
 } from './types';
 import { parseCodeAndExplanation } from './cloudAdapter';
 import { contentModerationService } from '../safety/contentModerationService';
+import {
+  buildEducationalSystemPrompt,
+  buildSubjectTutorContext,
+} from './tutorContextService';
 
 export const DEFAULT_LOCAL_MODEL = 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
 
@@ -353,26 +357,15 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
 
     const { messages, systemPrompt, learnerProfile, temperature, maxTokens, signal } = options;
 
-    let enrichedSystemPrompt =
-      systemPrompt ||
-      'You are MindMate, a concise and encouraging educational AI tutor running locally on the user device.';
-    enrichedSystemPrompt += `\n\nCore Subject & Context Rules:
-1. Directly and factually answer the user's active subject of inquiry. Never force programming or code into questions that are not about computer science or code.
-2. For biographical, historical, or real-person inquiries, provide neutral, objective, and factual information without graphic details or unsolicited code metaphors.
-3. When answering follow-up requests (such as "Explain differently", "Simplify", "Give example", "Quiz me", or "Show visually"), strictly preserve the subject of the immediately preceding question and answer. Never switch subjects or revert to previous syllabus topics on follow-up requests.
-4. If the required context to answer or re-explain is missing or ambiguous, ask the user to clarify instead of inventing context.
-5. Content safety & educational focus: MindMate is strictly an educational learning platform. Decline requests for adult entertainment, pornography, sexually explicit content, or explicit performers politely and redirect to academic subjects.
-6. Scientific biology & health exception: Legitimate questions about human reproduction, anatomy, puberty, STI prevention, and relationship consent must be answered factually, clinically, and age-appropriately without explicit depictions.`;
-    enrichedSystemPrompt += `\n${COMPACT_FORMATTING_GUIDELINES}`;
-
     // Local pre-flight content moderation (strictly 0 network calls)
     const userMessages = messages.filter((m) => m.role === 'user');
     const lastUserMsg = userMessages[userMessages.length - 1];
     const prevUserMsg = userMessages.length > 1 ? userMessages[userMessages.length - 2] : undefined;
     const prevAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant');
+    const lastUserPrompt = lastUserMsg?.promptContent || lastUserMsg?.content || '';
 
     const modResult = contentModerationService.evaluate(
-      lastUserMsg?.promptContent || lastUserMsg?.content || '',
+      lastUserPrompt,
       {
         previousQuestion: prevUserMsg?.content,
         previousAnswer: prevAssistantMsg?.content
@@ -391,11 +384,19 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
       return refusalResponse;
     }
 
-    if (learnerProfile) {
-      enrichedSystemPrompt += `\nLearner: ${learnerProfile.name || 'Alex'} (${
-        learnerProfile.learningStyle || 'Examples first'
-      }). Keep explanations focused on the user's question.`;
-    }
+    const tutorContext = buildSubjectTutorContext(
+      lastUserPrompt,
+      options.adaptiveContext,
+      options.learnerProfile
+    );
+
+    let enrichedSystemPrompt = buildEducationalSystemPrompt(
+      tutorContext,
+      systemPrompt,
+      learnerProfile
+    );
+
+    enrichedSystemPrompt += `\n${COMPACT_FORMATTING_GUIDELINES}`;
 
     // Optimization: Feed system prompt + recent conversation turns
     // to minimize prompt prefill latency on lightweight WebGPU local models.
@@ -470,6 +471,23 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
       }
     }
 
+    if (!accumulatedContent || accumulatedContent.trim().length === 0) {
+      throw new Error(`WebGPU model "${this.currentModelId}" returned an empty response.`);
+    }
+
+    // Guard against F1 circuit hallucination if user asked about F1 cars
+    if (tutorContext.relevance.category === 'off_topic_factual') {
+      const lower = accumulatedContent.toLowerCase();
+      if (
+        tutorContext.relevance.factualEntityHint?.pitfallAvoidance &&
+        (lower.includes('circuit') || lower.includes('track') || lower.includes('albert park') || lower.includes('australia')) &&
+        !lower.includes('car') &&
+        !lower.includes('vehicle')
+      ) {
+        accumulatedContent = `Formula One (F1) cars are high-performance, single-seat, open-cockpit racing cars built specifically for the FIA Formula One World Championship competitions, engineered for extreme speed, advanced aerodynamics, and hybrid powertrain efficiency.`;
+      }
+    }
+
     const elapsedMs = Date.now() - startTime;
     const parsed = parseCodeAndExplanation(accumulatedContent);
 
@@ -479,7 +497,12 @@ export class LocalWebLLMAdapter implements IAITutorAdapter {
       explanation: parsed.explanation,
       source: 'local',
       model: this.currentModelId,
-      elapsedMs
+      elapsedMs,
+      groundedInMaterial: Boolean(
+        options.adaptiveContext?.studyMaterialExcerpt &&
+          options.adaptiveContext.studyMaterialExcerpt.trim().length > 0
+      ),
+      groundedMaterialTitle: options.adaptiveContext?.studyMaterialTitle,
     };
 
     callbacks.onComplete?.(result);

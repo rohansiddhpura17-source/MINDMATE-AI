@@ -24,6 +24,7 @@ import {
 } from '../lib/db';
 import { useMastery } from '../hooks/useMastery';
 import { STRATEGY_LABELS } from '../services/adaptive/adaptiveLearningEngine';
+import { isDemoModeActive, clearDemoProgress, DEMO_MODE_CHANGED_EVENT } from '../services/demo/demoLearnerService';
 
 export default function MistakeReview() {
   const [searchParams] = useSearchParams();
@@ -40,6 +41,15 @@ export default function MistakeReview() {
   const [activeRetryId, setActiveRetryId] = useState<string | null>(null);
   const [retrySelectedOption, setRetrySelectedOption] = useState<number | null>(null);
   const [taskDoneNotice, setTaskDoneNotice] = useState<boolean>(false);
+  const [demoActive, setDemoActive] = useState(() => isDemoModeActive(user?.id));
+
+  useEffect(() => {
+    const handleDemoChange = (e: any) => {
+      setDemoActive(Boolean(e.detail?.active));
+    };
+    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+    return () => window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+  }, []);
 
   useEffect(() => {
     async function loadMistakes() {
@@ -57,6 +67,14 @@ export default function MistakeReview() {
     }
 
     void loadMistakes();
+
+    const reload = () => void loadMistakes();
+    window.addEventListener('mindmate-demo-mode-changed', reload);
+    window.addEventListener('mindmate-analytics-updated', reload);
+    return () => {
+      window.removeEventListener('mindmate-demo-mode-changed', reload);
+      window.removeEventListener('mindmate-analytics-updated', reload);
+    };
   }, [effectiveUserId]);
 
   const handleRetrySubmit = async (item: QuestionAttempt) => {
@@ -106,10 +124,55 @@ export default function MistakeReview() {
       pageSubtitle="Evidence-based grouping of incorrect attempts by topic, concept, and prerequisite"
     >
       <div className="max-w-4xl mx-auto space-y-6">
+        {/* Simulated Demo Data Banner */}
+        {demoActive && (
+          <div
+            className="bg-amber-50/90 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs"
+            data-testid="mistake-demo-banner"
+          >
+            <div className="flex gap-3 items-start">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 flex items-center justify-center shrink-0 border border-amber-300 dark:border-amber-700">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-200 dark:bg-amber-900 text-amber-900 dark:text-amber-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse" />
+                    SIMULATED DEMO DATA ACTIVE
+                  </span>
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Profile: {user?.name || 'meet8kotecha'}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed font-medium">
+                  Review items and recurring misconceptions are populated from a 14-day simulated history. <strong>Simulated results are not verified evidence of actual learning.</strong> Genuine learner records remain untouched.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0 sm:self-center">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={async () => {
+                  clearDemoProgress(user?.id);
+                  setDemoActive(false);
+                  const res = await getUserMistakes(effectiveUserId);
+                  setMistakes(res.data || []);
+                  await refresh();
+                  showToast('Demo data cleared. Returned to genuine mistake review.', 'info');
+                }}
+                className="bg-white hover:bg-amber-100/60 dark:bg-slate-800 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-800 shadow-xs font-semibold text-xs cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Clear Demo Data
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Header Stats & Filter */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-surface p-4 rounded-card border border-border">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-surface p-4 rounded-card border border-[#E2E8F0] shadow-soft">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-red-500/10 text-red-500">
+            <div className="p-2.5 rounded-xl bg-[#FEF2F2] text-[#B91C1C] border border-[#FECACA]">
               <AlertTriangle className="h-5 w-5" />
             </div>
             <div>
@@ -130,8 +193,8 @@ export default function MistakeReview() {
               onClick={() => setSelectedFilter('all')}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                 selectedFilter === 'all'
-                  ? 'bg-primary text-white shadow-sm'
-                  : 'bg-gray-100 dark:bg-slate-800 text-muted hover:text-dark'
+                  ? 'bg-[#4F46E5] text-white shadow-2xs'
+                  : 'bg-[#F8FAFC] border border-[#E2E8F0] text-muted hover:text-dark'
               }`}
             >
               All ({mistakes.length})
@@ -141,8 +204,8 @@ export default function MistakeReview() {
               onClick={() => setSelectedFilter('unresolved')}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                 selectedFilter === 'unresolved'
-                  ? 'bg-primary text-white shadow-sm'
-                  : 'bg-gray-100 dark:bg-slate-800 text-muted hover:text-dark'
+                  ? 'bg-[#4F46E5] text-white shadow-2xs'
+                  : 'bg-[#F8FAFC] border border-[#E2E8F0] text-muted hover:text-dark'
               }`}
             >
               Unresolved ({unresolvedTotal})
@@ -152,8 +215,8 @@ export default function MistakeReview() {
               onClick={() => setSelectedFilter('resolved')}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                 selectedFilter === 'resolved'
-                  ? 'bg-primary text-white shadow-sm'
-                  : 'bg-gray-100 dark:bg-slate-800 text-muted hover:text-dark'
+                  ? 'bg-[#4F46E5] text-white shadow-2xs'
+                  : 'bg-[#F8FAFC] border border-[#E2E8F0] text-muted hover:text-dark'
               }`}
             >
               Resolved ({mistakes.length - unresolvedTotal})
@@ -283,11 +346,11 @@ export default function MistakeReview() {
 
                     <div className="flex items-center gap-2">
                       {item.resolved ? (
-                        <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1 bg-emerald-500/10 px-2.5 py-1 rounded-full">
+                        <span className="text-xs font-semibold text-[#047857] flex items-center gap-1 bg-[#ECFDF5] border border-[#A7F3D0] px-2.5 py-1 rounded-full">
                           <Check className="h-3.5 w-3.5" /> Resolved
                         </span>
                       ) : (
-                        <span className="text-xs font-semibold text-amber-500 flex items-center gap-1 bg-amber-500/10 px-2.5 py-1 rounded-full">
+                        <span className="text-xs font-semibold text-[#92400E] flex items-center gap-1 bg-[#FFFBEB] border border-[#FDE68A] px-2.5 py-1 rounded-full">
                           Needs Review
                         </span>
                       )}
@@ -312,22 +375,22 @@ export default function MistakeReview() {
                         <div className="grid gap-2">
                           {item.options.map((opt, optIdx) => {
                             let style =
-                              'bg-gray-50 dark:bg-slate-800/40 border-border text-dark';
+                              'bg-[#F8FAFC] border-[#E2E8F0] text-dark';
                             let statusIcon = null;
 
                             if (optIdx === item.correct_option) {
                               style =
-                                'bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-300 font-semibold';
+                                'bg-[#ECFDF5] border-[#A7F3D0] text-[#047857] font-semibold';
                               statusIcon = (
-                                <span className="text-xs text-emerald-600 font-bold">
+                                <span className="text-xs text-[#047857] font-bold">
                                   Correct Answer
                                 </span>
                               );
                             } else if (optIdx === item.selected_option) {
                               style =
-                                'bg-red-500/10 border-red-500/40 text-red-700 dark:text-red-300 font-semibold';
+                                'bg-[#FEF2F2] border-[#FECACA] text-[#B91C1C] font-semibold';
                               statusIcon = (
-                                <span className="text-xs text-red-500 font-bold">
+                                <span className="text-xs text-[#B91C1C] font-bold">
                                   Your Previous Choice
                                 </span>
                               );
@@ -339,7 +402,7 @@ export default function MistakeReview() {
                                 className={`p-3 rounded-xl border flex items-center justify-between text-sm ${style}`}
                               >
                                 <div className="flex items-center gap-2">
-                                  <span className="w-5 h-5 rounded border border-border flex items-center justify-center text-xs font-bold text-muted">
+                                  <span className="w-5 h-5 rounded border border-[#CBD5E1] bg-surface flex items-center justify-center text-xs font-bold text-muted">
                                     {String.fromCharCode(65 + optIdx)}
                                   </span>
                                   <span>{opt}</span>
@@ -351,12 +414,12 @@ export default function MistakeReview() {
                         </div>
                       )}
 
-                      <div className="p-4 rounded-xl bg-indigo-50/40 dark:bg-slate-800/60 border border-primary/20 space-y-1">
-                        <div className="flex items-center gap-1.5 text-primary text-xs font-bold">
+                      <div className="p-4 rounded-xl bg-[#EFF6FF] border border-[#BFDBFE] space-y-1">
+                        <div className="flex items-center gap-1.5 text-[#1D4ED8] text-xs font-bold">
                           <Lightbulb className="h-4 w-4" />
                           <span>Authoritative Answer Explanation</span>
                         </div>
-                        <p className="text-sm text-dark/80 leading-relaxed">
+                        <p className="text-sm text-dark leading-relaxed">
                           {item.explanation}
                         </p>
                       </div>

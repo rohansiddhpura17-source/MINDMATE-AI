@@ -62,12 +62,14 @@ export function useMastery() {
     window.addEventListener('storage', syncLocal);
     window.addEventListener(ANALYTICS_UPDATED_EVENT, syncLocal);
     window.addEventListener('mindmate-mastery-updated', syncLocal);
+    window.addEventListener('mindmate-demo-mode-changed', syncLocal);
 
     return () => {
       window.removeEventListener('focus', syncLocal);
       window.removeEventListener('storage', syncLocal);
       window.removeEventListener(ANALYTICS_UPDATED_EVENT, syncLocal);
       window.removeEventListener('mindmate-mastery-updated', syncLocal);
+      window.removeEventListener('mindmate-demo-mode-changed', syncLocal);
     };
   }, [user?.id, userId]);
 

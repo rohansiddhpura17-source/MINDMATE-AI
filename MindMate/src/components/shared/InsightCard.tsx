@@ -25,10 +25,26 @@ export function InsightCard({ type, title, description, action, onAction, classN
 
   const getColorClasses = () => {
     switch (type) {
-      case 'mistake': return 'text-warning bg-yellow-50 dark:bg-yellow-950/30 border-yellow-200 dark:border-yellow-800/40';
-      case 'behavior': return 'text-danger bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/40';
-      case 'mastery': return 'text-success bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800/40';
-      default: return 'text-primary bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-800/40';
+      case 'mistake':
+        return {
+          card: 'border-[#FDE68A] bg-surface',
+          iconWrap: 'bg-[#FFFBEB] text-[#92400E] border border-[#FDE68A]',
+        };
+      case 'behavior':
+        return {
+          card: 'border-[#FECACA] bg-surface',
+          iconWrap: 'bg-[#FEF2F2] text-[#B91C1C] border border-[#FECACA]',
+        };
+      case 'mastery':
+        return {
+          card: 'border-[#A7F3D0] bg-surface',
+          iconWrap: 'bg-[#ECFDF5] text-[#047857] border border-[#A7F3D0]',
+        };
+      default:
+        return {
+          card: 'border-[#BFDBFE] bg-surface',
+          iconWrap: 'bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]',
+        };
     }
   };
 
@@ -36,15 +52,15 @@ export function InsightCard({ type, title, description, action, onAction, classN
   const colorClasses = getColorClasses();
 
   return (
-    <Card className={cn(`p-4 flex flex-col md:flex-row gap-4 border ${colorClasses.split(' ')[2]}`, className)}>
-      <div className={cn("p-3 rounded-full h-fit flex-shrink-0", colorClasses.split(' ')[1], colorClasses.split(' ')[0])}>
+    <Card className={cn(`p-4 flex flex-col md:flex-row gap-4 border shadow-xs ${colorClasses.card}`, className)}>
+      <div className={cn("p-3 rounded-xl h-fit flex-shrink-0", colorClasses.iconWrap)}>
         <Icon className="h-6 w-6" />
       </div>
       <div className="flex-1">
         <h4 className="font-semibold text-dark mb-1">{title}</h4>
-        <p className="text-sm text-dark/80 mb-3">{description}</p>
+        <p className="text-sm text-muted mb-3">{description}</p>
         {action && onAction && (
-          <Button variant="secondary" size="sm" onClick={onAction} className="bg-surface hover:bg-gray-50 dark:hover:bg-slate-800 text-dark border border-border text-xs">
+          <Button variant="secondary" size="sm" onClick={onAction} className="text-xs">
             {action}
           </Button>
         )}

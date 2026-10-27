@@ -440,9 +440,9 @@ export default function AdaptiveQuiz() {
     >
       <div className="max-w-4xl mx-auto space-y-6">
         {/* Top Topic, Mastery & Difficulty Bar */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-surface p-4 rounded-card border border-border">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-surface p-4 rounded-card border border-[#E2E8F0] shadow-soft">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400">
+            <div className="p-2.5 rounded-xl bg-[#EEF2FF] text-[#4F46E5] border border-[#C7D2FE]">
               <Brain className="h-5 w-5" />
             </div>
             <div>
@@ -469,7 +469,7 @@ export default function AdaptiveQuiz() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
-            <div className="text-xs bg-gray-100 dark:bg-slate-800 px-3 py-1.5 rounded-xl">
+            <div className="text-xs bg-[#F8FAFC] border border-[#E2E8F0] px-3 py-1.5 rounded-xl">
               <span className="text-muted">Mastery: </span>
               <span className="font-bold text-dark">
                 {liveTopicMastery.totalAttempts > 0
@@ -478,14 +478,14 @@ export default function AdaptiveQuiz() {
               </span>
             </div>
 
-            <div className="flex items-center gap-1.5 bg-gray-100 dark:bg-slate-800 px-3 py-1.5 rounded-xl">
-              <TrendingUp className="h-4 w-4 text-primary" />
-              <span className="text-xs font-semibold text-dark">
+            <div className="flex items-center gap-1.5 bg-[#EEF2FF] border border-[#C7D2FE] px-3 py-1.5 rounded-xl">
+              <TrendingUp className="h-4 w-4 text-[#4F46E5]" />
+              <span className="text-xs font-semibold text-[#3730A3]">
                 {getDifficultyLabel(difficulty)}
               </span>
             </div>
 
-            <div className="flex items-center gap-1 text-amber-500 font-bold text-xs bg-amber-500/10 px-2.5 py-1.5 rounded-xl">
+            <div className="flex items-center gap-1 text-[#92400E] font-bold text-xs bg-[#FFFBEB] border border-[#FDE68A] px-2.5 py-1.5 rounded-xl">
               <Flame className="h-4 w-4" />
               <span>{streak} Streak</span>
             </div>
@@ -497,14 +497,14 @@ export default function AdaptiveQuiz() {
           <div
             role="status"
             aria-live="polite"
-            className={`flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 rounded-xl border text-xs font-medium ${
+            className={`flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 rounded-xl border text-xs font-semibold ${
               persistenceStatus === 'saved_cloud'
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
+                ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#047857]'
                 : persistenceStatus === 'saved_local_only'
-                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300'
+                  ? 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
                   : persistenceStatus === 'failed'
-                    ? 'border-red-500/30 bg-red-500/10 text-red-800 dark:text-red-300'
-                    : 'border-primary/30 bg-primary/10 text-primary'
+                    ? 'border-[#FECACA] bg-[#FEF2F2] text-[#B91C1C]'
+                    : 'border-[#BFDBFE] bg-[#EFF6FF] text-[#1D4ED8]'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -524,7 +524,7 @@ export default function AdaptiveQuiz() {
                   type="button"
                   onClick={handleRetrySync}
                   disabled={retryingSync}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-surface border border-border text-dark hover:border-primary transition-colors font-semibold"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-surface border border-[#CBD5E1] text-dark hover:border-[#4F46E5] transition-colors font-semibold"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${retryingSync ? 'animate-spin' : ''}`} />
                   {retryingSync ? 'Syncing...' : 'Retry Cloud Sync'}
@@ -535,7 +535,7 @@ export default function AdaptiveQuiz() {
 
         {/* Difficulty Fallback Notice (B2 requirement) */}
         {!isComplete && currentSelection?.isDifficultyFallback && currentSelection.fallbackNotice && (
-          <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-amber-800 dark:text-amber-300">
+          <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] text-xs text-[#92400E]">
             <Info className="h-4 w-4 shrink-0 mt-0.5" />
             <div>
               <span className="font-bold">Adaptive Difficulty Fallback: </span>
@@ -547,10 +547,10 @@ export default function AdaptiveQuiz() {
         {/* Gemma 4 Draft Notice */}
         {draftNotice && (
           <div
-            className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border text-xs ${
+            className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border text-xs font-medium ${
               draftNotice.type === 'success'
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
-                : 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300'
+                ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#047857]'
+                : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
             }`}
           >
             <Cpu className="h-4 w-4 shrink-0 mt-0.5" />
@@ -559,15 +559,15 @@ export default function AdaptiveQuiz() {
         )}
 
         {!isComplete && currentQuestion && (
-          <Card className="p-6 sm:p-8 space-y-6 border border-border shadow-sm">
+          <Card className="p-6 sm:p-8 space-y-6 border border-[#E2E8F0] shadow-soft">
             {/* Header with question progress & difficulty badge */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-border">
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-[#E2E8F0]">
               <div className="space-y-1">
                 <span className="text-xs font-semibold text-muted uppercase tracking-wider">
                   Question {stepIndex + 1} of {SESSION_QUESTION_LIMIT}
                 </span>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="default" className="text-[11px]">
+                  <Badge variant="primary" className="text-[11px]">
                     Question Difficulty {currentQuestion.difficulty}/5
                   </Badge>
                   {currentQuestion.concept && (
@@ -576,7 +576,7 @@ export default function AdaptiveQuiz() {
                     </Badge>
                   )}
                   {difficultyDelta && (
-                    <span className="text-xs font-medium text-primary">
+                    <span className="text-xs font-semibold text-[#4F46E5]">
                       {difficultyDelta}
                     </span>
                   )}
@@ -592,7 +592,7 @@ export default function AdaptiveQuiz() {
                     type="button"
                     onClick={handleGenerateGemmaQuestion}
                     disabled={generatingDraft}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border border-purple-500/30 bg-purple-500/10 text-purple-700 dark:text-purple-300 hover:bg-purple-500/20 transition-colors"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border border-[#C7D2FE] bg-[#EEF2FF] text-[#4338CA] hover:bg-[#E0E7FF] transition-colors shadow-2xs"
                     title="Generate a schema-validated practice question using local Ollama Gemma 4 (gemma4:e2b)"
                   >
                     <Cpu className="h-3.5 w-3.5" />
@@ -616,25 +616,34 @@ export default function AdaptiveQuiz() {
             <div className="space-y-3 pt-2">
               {currentQuestion.options.map((opt: string, idx: number) => {
                 let btnStyle =
-                  'border-border bg-surface hover:border-primary/50 text-dark';
+                  'border-[#E2E8F0] bg-surface hover:border-[#4F46E5] hover:bg-[#F8FAFC] text-dark';
+                let letterStyle =
+                  'border-[#CBD5E1] text-muted bg-[#F8FAFC]';
                 let icon = null;
 
                 if (selectedOption === idx) {
                   btnStyle =
-                    'border-primary bg-primary/5 text-primary ring-2 ring-primary/20';
+                    'border-[#4F46E5] bg-[#EEF2FF] text-[#1E1B4B] font-semibold ring-2 ring-[#4F46E5]/20';
+                  letterStyle =
+                    'border-[#4F46E5] bg-[#4F46E5] text-white';
                 }
 
                 if (isAnswered) {
                   if (idx === currentQuestion.correct) {
                     btnStyle =
-                      'border-emerald-500 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-semibold ring-2 ring-emerald-500/30';
-                    icon = <CheckCircle2 className="h-5 w-5 text-emerald-500 shrink-0" />;
+                      'border-[#A7F3D0] bg-[#ECFDF5] text-[#047857] font-semibold ring-2 ring-[#047857]/20';
+                    letterStyle =
+                      'border-[#047857] bg-[#047857] text-white';
+                    icon = <CheckCircle2 className="h-5 w-5 text-[#047857] shrink-0" />;
                   } else if (selectedOption === idx) {
                     btnStyle =
-                      'border-red-500 bg-red-500/10 text-red-700 dark:text-red-300 font-semibold ring-2 ring-red-500/30';
-                    icon = <XCircle className="h-5 w-5 text-red-500 shrink-0" />;
+                      'border-[#FECACA] bg-[#FEF2F2] text-[#B91C1C] font-semibold ring-2 ring-[#B91C1C]/20';
+                    letterStyle =
+                      'border-[#B91C1C] bg-[#B91C1C] text-white';
+                    icon = <XCircle className="h-5 w-5 text-[#B91C1C] shrink-0" />;
                   } else {
-                    btnStyle = 'opacity-50 border-border text-muted';
+                    btnStyle = 'opacity-55 border-[#E2E8F0] bg-[#F8FAFC] text-muted';
+                    letterStyle = 'border-[#E2E8F0] text-muted bg-surface';
                   }
                 }
 
@@ -644,10 +653,10 @@ export default function AdaptiveQuiz() {
                     type="button"
                     onClick={() => handleSelectOption(idx)}
                     disabled={isAnswered}
-                    className={`w-full flex items-center justify-between p-4 rounded-xl border text-left transition-all ${btnStyle}`}
+                    className={`w-full flex items-center justify-between p-4 rounded-xl border text-left transition-all shadow-2xs ${btnStyle}`}
                   >
                     <div className="flex items-center gap-3">
-                      <span className="w-7 h-7 rounded-lg border border-border flex items-center justify-center text-xs font-bold text-muted bg-gray-50 dark:bg-slate-800">
+                      <span className={`w-7 h-7 rounded-lg border flex items-center justify-center text-xs font-bold shrink-0 ${letterStyle}`}>
                         {String.fromCharCode(65 + idx)}
                       </span>
                       <span className="text-sm sm:text-base">{opt}</span>
@@ -663,23 +672,23 @@ export default function AdaptiveQuiz() {
               <div
                 className={`p-4 rounded-xl border animate-in fade-in duration-200 ${
                   isCorrect
-                    ? 'border-emerald-500/30 bg-emerald-500/5 text-dark'
-                    : 'border-red-500/30 bg-red-500/5 text-dark'
+                    ? 'border-[#A7F3D0] bg-[#ECFDF5] text-dark'
+                    : 'border-[#FECACA] bg-[#FEF2F2] text-dark'
                 }`}
               >
                 <div className="flex items-start gap-3">
                   {isCorrect ? (
-                    <Sparkles className="h-5 w-5 text-emerald-500 shrink-0 mt-0.5" />
+                    <Sparkles className="h-5 w-5 text-[#047857] shrink-0 mt-0.5" />
                   ) : (
-                    <AlertCircle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+                    <AlertCircle className="h-5 w-5 text-[#B91C1C] shrink-0 mt-0.5" />
                   )}
                   <div className="space-y-1">
-                    <p className="text-xs font-bold uppercase tracking-wider text-muted">
+                    <p className={`text-xs font-bold uppercase tracking-wider ${isCorrect ? 'text-[#047857]' : 'text-[#B91C1C]'}`}>
                       {isCorrect
                         ? 'Correct! Authoritative Answer Evaluation:'
                         : 'Incorrect — Recorded for Adaptive Mistake Analysis:'}
                     </p>
-                    <p className="text-sm text-dark/90 leading-relaxed">
+                    <p className="text-sm text-dark leading-relaxed">
                       {currentQuestion.explanation}
                     </p>
                   </div>
@@ -688,7 +697,7 @@ export default function AdaptiveQuiz() {
             )}
 
             {/* Actions */}
-            <div className="flex justify-end pt-4 border-t border-border">
+            <div className="flex justify-end pt-4 border-t border-[#E2E8F0]">
               {!isAnswered ? (
                 <Button
                   onClick={handleSubmitAnswer}
@@ -714,9 +723,9 @@ export default function AdaptiveQuiz() {
 
         {/* Quiz Completed Summary + What Changed & Why (B4 requirement) */}
         {isComplete && (
-          <Card className="p-8 sm:p-10 space-y-6 border border-border">
+          <Card className="p-8 sm:p-10 space-y-6 border border-[#E2E8F0] shadow-soft">
             <div className="text-center space-y-3">
-              <div className="w-16 h-16 rounded-2xl bg-primary/10 text-primary mx-auto flex items-center justify-center">
+              <div className="w-16 h-16 rounded-2xl bg-[#EEF2FF] border border-[#C7D2FE] text-[#4F46E5] mx-auto flex items-center justify-center">
                 <Trophy className="h-8 w-8" />
               </div>
               <h2 className="text-2xl sm:text-3xl font-bold text-dark">
@@ -728,29 +737,29 @@ export default function AdaptiveQuiz() {
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 max-w-2xl mx-auto py-2">
-              <div className="p-4 rounded-xl bg-gray-50 dark:bg-slate-800/60 border border-border text-center">
+              <div className="p-4 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-center">
                 <span className="text-xs text-muted block">Session Score</span>
                 <span className="text-xl font-bold text-dark">
                   {score}/{totalAnswered}
                 </span>
               </div>
-              <div className="p-4 rounded-xl bg-gray-50 dark:bg-slate-800/60 border border-border text-center">
+              <div className="p-4 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-center">
                 <span className="text-xs text-muted block">Session Accuracy</span>
-                <span className="text-xl font-bold text-primary">
+                <span className="text-xl font-bold text-[#4F46E5]">
                   {totalAnswered > 0 ? Math.round((score / totalAnswered) * 100) : 0}%
                 </span>
               </div>
-              <div className="p-4 rounded-xl bg-gray-50 dark:bg-slate-800/60 border border-border text-center">
+              <div className="p-4 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-center">
                 <span className="text-xs text-muted block">Topic Mastery</span>
-                <span className="text-xl font-bold text-purple-600">
+                <span className="text-xl font-bold text-[#047857]">
                   {adaptationDelta
                     ? `${adaptationDelta.previousMastery}% → ${adaptationDelta.newMastery}%`
                     : `${liveTopicMastery.masteryScore}%`}
                 </span>
               </div>
-              <div className="p-4 rounded-xl bg-gray-50 dark:bg-slate-800/60 border border-border text-center">
+              <div className="p-4 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-center">
                 <span className="text-xs text-muted block">Confidence</span>
-                <span className="text-xl font-bold text-amber-500 capitalize">
+                <span className="text-xl font-bold text-[#92400E] capitalize">
                   {adaptationDelta?.newConfidence || liveTopicMastery.confidenceLevel}
                 </span>
               </div>
@@ -758,19 +767,19 @@ export default function AdaptiveQuiz() {
 
             {/* What Changed & Why Card */}
             {adaptationDelta && (
-              <div className="p-5 rounded-2xl border border-primary/25 bg-primary/5 space-y-4 text-left max-w-2xl mx-auto">
+              <div className="p-5 rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] space-y-4 text-left max-w-2xl mx-auto">
                 <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-sm font-bold uppercase tracking-wider text-primary flex items-center gap-2">
+                  <h3 className="text-sm font-bold uppercase tracking-wider text-[#1D4ED8] flex items-center gap-2">
                     <Sparkles className="h-4 w-4" />
                     What Changed & Why — Adaptive Engine Decision
                   </h3>
-                  <Badge variant="default" className="text-xs">
+                  <Badge variant="primary" className="text-xs">
                     Next Difficulty: Level {adaptationDelta.nextSuggestedDifficulty}/5
                   </Badge>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  <div className="p-3 rounded-xl bg-surface border border-border space-y-1">
+                  <div className="p-3.5 rounded-xl bg-surface border border-[#E2E8F0] space-y-1 shadow-2xs">
                     <span className="text-muted font-semibold block">
                       Selected Teaching Strategy:
                     </span>
@@ -782,7 +791,7 @@ export default function AdaptiveQuiz() {
                     </p>
                   </div>
 
-                  <div className="p-3 rounded-xl bg-surface border border-border space-y-1">
+                  <div className="p-3.5 rounded-xl bg-surface border border-[#E2E8F0] space-y-1 shadow-2xs">
                     <span className="text-muted font-semibold block">
                       Recommended Next Step:
                     </span>
@@ -796,14 +805,14 @@ export default function AdaptiveQuiz() {
                   </div>
                 </div>
 
-                <p className="text-[11px] text-muted">
+                <p className="text-[11px] text-dark">
                   <strong>Evidence Trail:</strong> {adaptationDelta.nextAction.supportingEvidence.detail}
                 </p>
               </div>
             )}
 
             {taskCompletedNotice && (
-              <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-sm font-semibold max-w-lg mx-auto flex items-center justify-center gap-2">
+              <div className="p-3.5 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] text-[#047857] text-sm font-semibold max-w-lg mx-auto flex items-center justify-center gap-2">
                 <CheckCircle2 className="h-4 w-4" />
                 Linked Planner Task has been marked Completed!
               </div>

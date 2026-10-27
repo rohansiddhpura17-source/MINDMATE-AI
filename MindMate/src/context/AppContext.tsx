@@ -113,7 +113,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch {}
   };
 
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(() => {
+    try {
+      const saved = localStorage.getItem('mindmate_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [isAuthLoading, setIsAuthLoading] = useState(true);
 
   const [notifications] = useState<Notification[]>([
@@ -179,7 +186,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session?.user) {
         let avatar = session.user.user_metadata?.avatar;
         let goal = session.user.user_metadata?.goal;
@@ -194,15 +201,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         } catch {}
 
-        setUser({
+        const authUser: AuthUser = {
           id: session.user.id,
           name: session.user.user_metadata.name || session.user.email?.split('@')[0],
           email: session.user.email!,
           goal,
           avatar: avatar || '/avatars/avatar-01.webp',
           bio,
-        });
-      } else {
+        };
+        setUser(authUser);
+        try {
+          localStorage.setItem('mindmate_user', JSON.stringify(authUser));
+        } catch {}
+      } else if (event === 'SIGNED_OUT') {
+        try {
+          localStorage.removeItem('mindmate_user');
+        } catch {}
         setUser(null);
       }
       setIsAuthLoading(false);
@@ -242,6 +256,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    try {
+      localStorage.removeItem('mindmate_user');
+    } catch {}
+    setUser(null);
+    if (!isSupabaseConfigured) return;
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
   };

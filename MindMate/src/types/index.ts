@@ -78,6 +78,7 @@ export interface PlannerDayData {
 }
 
 import type { VisualPayload } from '../services/visual/types';
+import type { ActionPlan } from '../services/actions/types';
 
 export interface ChatMessage {
   id: number | string;
@@ -95,4 +96,8 @@ export interface ChatMessage {
   error?: string;
   requestPrompt?: string;
   visual?: VisualPayload;
+  visualLoading?: boolean;
+  visualLoadingSubject?: string;
+  visualError?: string;
+  actionPlan?: ActionPlan;
 }

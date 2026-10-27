@@ -52,13 +52,14 @@ export function Header({ title, subtitle }: HeaderProps) {
     : 'AL';
 
   return (
-    <header className="h-[72px] bg-surface border-b border-border flex items-center justify-between px-4 sm:px-8 sticky top-0 z-30 w-full">
-      <div className="flex items-center gap-3 min-w-0">
+    <header className="h-[72px] bg-surface border-b border-border flex items-center justify-between px-4 sm:px-6 lg:px-8 sticky top-0 z-30 w-full">
+      <div className="flex items-center gap-3 min-w-0 flex-1 mr-4">
         <button
           type="button"
           onClick={toggleMobileNav}
           className="p-2 -ml-2 rounded-xl text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800 md:hidden shrink-0"
           title="Open menu"
+          aria-label="Open navigation menu"
         >
           <Menu className="h-5 w-5" />
         </button>
@@ -68,8 +69,8 @@ export function Header({ title, subtitle }: HeaderProps) {
         </div>
       </div>
 
-      <div className="flex items-center gap-3 sm:gap-4">
-        <Search placeholder="Search..." containerClassName="w-56 hidden md:block" />
+      <div className="flex items-center gap-2.5 sm:gap-4 shrink-0">
+        <Search placeholder="Search..." containerClassName="w-48 lg:w-56 hidden md:block" />
 
         {/* Language Selector */}
         <div className="relative" ref={langRef}>

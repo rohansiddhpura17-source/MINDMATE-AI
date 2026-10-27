@@ -15,7 +15,7 @@ export function Search({ className, containerClassName, ...props }: SearchProps)
       <input
         type="text"
         className={cn(
-          "block w-full pl-10 pr-3 py-2 border border-border rounded-btn text-sm placeholder-muted focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent bg-background",
+          "block w-full pl-10 pr-3 py-2 border border-[#CBD5E1] rounded-btn text-sm text-dark placeholder:text-[#64748B] focus:outline-none focus:ring-2 focus:ring-[#4F46E5] focus:border-[#4F46E5] bg-surface shadow-2xs transition-colors",
           className
         )}
         {...props}

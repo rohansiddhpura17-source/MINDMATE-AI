@@ -23,6 +23,11 @@ import {
   ChevronDown,
   SlidersHorizontal,
   Terminal,
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX,
+  Eye,
 } from 'lucide-react';
 import { MarkdownMessage, CodeBlock } from '../components/markdown/MarkdownMessage';
 import { chatMessages as initialMessages, learner } from '../data/mockData';
@@ -44,6 +49,9 @@ import {
   buildFollowUpContext,
   isFollowUpAction,
   buildDeterministicCurriculumFallback,
+  localWebLLMAdapter,
+  formatProviderBadge,
+  classifyTopicRelevance,
 } from '../services/ai';
 import {
   selectExplanationStrategy,
@@ -52,16 +60,47 @@ import {
 } from '../services/adaptive/adaptiveLearningEngine';
 import type { ExplanationStrategy } from '../services/assessment/types';
 import { VisualRenderer } from '../components/visual/VisualRenderer';
-import { generateVisualRepresentation, VisualPayload } from '../services/visual';
-import { findPrecedingTurn, normalizeAction } from '../services/ai/followUpContext';
+import { generateVisualRepresentation, VisualPayload, extractVisualSubject } from '../services/visual';
+import { isDemoModeActive, DEMO_MODE_CHANGED_EVENT } from '../services/demo/demoLearnerService';
+import { findPrecedingTurn, normalizeAction, resolveConversationalFollowUp } from '../services/ai/followUpContext';
+import { extractEntityName } from '../services/visual/imageSearchService';
+import { isImageGenerationRequest, generateExplicitImage } from '../services/visual/imageGenerationService';
+import { VoiceAssistantPanel } from '../components/voice/VoiceAssistantPanel';
+import { VoicePrivacyNoticeModal } from '../components/voice/VoicePrivacyNoticeModal';
+import { usePanelState } from '../hooks/usePanelState';
+import { PanelControls } from '../components/ui/PanelControls';
+import { ActionExecutionCard } from '../components/actions/ActionExecutionCard';
+import { actionExecutionService, ActionPlan } from '../services/actions';
+import {
+  VoiceState,
+  VoiceSettings,
+  loadVoiceSettings,
+  saveVoiceSettings,
+  isVoicePrivacyAcknowledged,
+  setVoicePrivacyAcknowledged,
+  VOICE_SETTINGS_EVENT,
+  speechRecognitionService,
+  speechSynthesisService,
+  parseVoiceCommand,
+} from '../services/voice';
 
 const CHIPS = ['Explain differently', 'Simplify', 'Give example', 'Quiz me', 'Show visually'];
 
 export default function Learn() {
-  const { user } = useAppContext();
+  const { user, isOnline } = useAppContext();
   const navigate = useNavigate();
   const { recordStudyActivity } = useStudyStreak();
   const { snapshot: analyticsSnapshot } = useMastery();
+
+  // Voice Assistant states
+  const [isVoiceModeActive, setIsVoiceModeActive] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [finalTranscript, setFinalTranscript] = useState('');
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
+  const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState(false);
+  const [voiceConfirmation, setVoiceConfirmation] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     return initialMessages.map((msg) => ({
@@ -77,6 +116,19 @@ export default function Learn() {
   const [selectedLocalModel, setSelectedLocalModel] = useState(DEFAULT_LOCAL_MODEL);
   const [checkingOllama, setCheckingOllama] = useState(false);
 
+  // Demo progress isolation state
+  const [demoActive, setDemoActive] = useState(() => isDemoModeActive(user?.id));
+
+  useEffect(() => {
+    const handleDemoChange = (e: any) => {
+      setDemoActive(Boolean(e.detail?.active));
+    };
+    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+    return () => window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+  }, []);
+
+  const isDemo = demoActive || Boolean(analyticsSnapshot?.isDemoMode);
+
   // Progressive streaming and phase tracking states
   const [currentPhase, setCurrentPhase] = useState<GenerationPhase>('idle');
   const [phaseDetail, setPhaseDetail] = useState<string>('');
@@ -89,11 +141,37 @@ export default function Learn() {
   const [quizMode, setQuizMode] = useState(false);
   const [quizQuestionCount, setQuizQuestionCount] = useState(0);
 
-  // Collapsible panels state
-  const [isAiModeExpanded, setIsAiModeExpanded] = useState(true);
-  const [isLocalAiExpanded, setIsLocalAiExpanded] = useState(true);
-  const [isLearningContextExpanded, setIsLearningContextExpanded] = useState(true);
-  const [isChatExpanded, setIsChatExpanded] = useState(true);
+  // Collapsible panels state with localStorage persistence
+  const [isAiModeExpanded, setIsAiModeExpanded] = useState(false);
+
+  const chatPanel = usePanelState({
+    storageKey: 'mm_panel_mate_chat',
+    defaultExpanded: true,
+    defaultMaximized: false,
+    defaultZoom: 100,
+    minZoom: 80,
+    maxZoom: 125,
+    zoomStep: 10,
+  });
+  const isChatExpanded = chatPanel.isExpanded;
+  const isChatMaximized = chatPanel.isMaximized;
+  const chatZoomLevel = chatPanel.zoomLevel;
+
+  const contextPanel = usePanelState({
+    storageKey: 'mm_panel_learning_context',
+    defaultExpanded: true,
+  });
+
+  // Auto-minimize Modes drawer on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isAiModeExpanded) {
+        setIsAiModeExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAiModeExpanded]);
 
   const feedRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -131,13 +209,20 @@ export default function Learn() {
   }, [messages, isGenerating, isChatExpanded]);
 
   const toggleChatExpanded = () => {
-    if (isChatExpanded && feedRef.current) {
+    if (chatPanel.isExpanded && feedRef.current) {
       collapsedScrollRef.current = {
         scrollTop: feedRef.current.scrollTop,
         signature: messagesSignature,
       };
     }
-    setIsChatExpanded(!isChatExpanded);
+    chatPanel.toggleExpanded();
+  };
+
+  const toggleChatMaximized = () => {
+    if (!chatPanel.isMaximized && !chatPanel.isExpanded) {
+      chatPanel.setIsExpanded(true);
+    }
+    chatPanel.toggleMaximized();
   };
 
   useEffect(() => {
@@ -277,9 +362,19 @@ export default function Learn() {
 
   useEffect(() => {
     isMountedRef.current = true;
+    const handleVoiceSettingsUpdate = (e: any) => {
+      if (e.detail) {
+        setVoiceSettings(e.detail);
+      }
+    };
+    window.addEventListener(VOICE_SETTINGS_EVENT, handleVoiceSettingsUpdate);
+
     return () => {
       isMountedRef.current = false;
       stopTimer();
+      window.removeEventListener(VOICE_SETTINGS_EVENT, handleVoiceSettingsUpdate);
+      speechRecognitionService.stopListening();
+      speechSynthesisService.stop();
     };
   }, []);
 
@@ -353,6 +448,8 @@ export default function Learn() {
 
   const handleStopGenerating = () => {
     aiTutorService.abort();
+    speechSynthesisService.stop();
+    setVoiceState('idle');
     stopTimer();
     setIsGenerating(false);
     setCurrentPhase('cancelled');
@@ -392,6 +489,9 @@ export default function Learn() {
   ) => {
     const seq = ++currentRequestSeqRef.current;
     setIsGenerating(true);
+    if (isVoiceModeActive) {
+      setVoiceState('thinking');
+    }
     setActiveAssistantId(targetAssistantId);
     activeAssistantIdRef.current = targetAssistantId;
     currentPendingQuestionRef.current = { text: userText, options };
@@ -434,6 +534,13 @@ export default function Learn() {
               m.content.trim().length > 0))
       );
 
+      const topicRelevance = classifyTopicRelevance(userText, resolvedActiveTopicMeta.id);
+      const effectiveTopicMeta =
+        topicRelevance.category === 'subject_switch_intent' && topicRelevance.targetTopic
+          ? topicRelevance.targetTopic
+          : resolvedActiveTopicMeta;
+      const effectiveTopicName = effectiveTopicMeta.name;
+
       await aiTutorService.sendMessageStream(
         {
           messages: [
@@ -455,8 +562,8 @@ export default function Learn() {
                   : 'Foundational',
           },
           adaptiveContext: {
-            topicId: resolvedActiveTopicMeta.id,
-            topicName: activeTopic,
+            topicId: effectiveTopicMeta.id,
+            topicName: effectiveTopicName,
             masteryScore: activeMastery,
             confidenceLevel: activeConfidence,
             recentAccuracy: activeTopicMetric?.recentAccuracy ?? 0,
@@ -464,9 +571,14 @@ export default function Learn() {
             explanationStrategy: activeStrategy,
             strategyReason: activeStrategyReason,
             recentMistakesSummary: topicMistakeSummaries,
-            studyMaterialTitle: matchingMaterial?.name,
+            studyMaterialTitle:
+              topicRelevance.category === 'off_topic_factual'
+                ? undefined
+                : matchingMaterial?.name,
             studyMaterialExcerpt:
-              matchingMaterial?.raw_content || matchingMaterial?.summary,
+              topicRelevance.category === 'off_topic_factual'
+                ? undefined
+                : matchingMaterial?.raw_content || matchingMaterial?.summary,
           },
         },
         {
@@ -538,10 +650,32 @@ export default function Learn() {
                 console.warn('Could not persist message to Supabase', e);
               }
             }
+
+            if (voiceSettings.autoSpeak && isVoiceModeActive && res.content) {
+              setVoiceState('speaking');
+              void speechSynthesisService.speak(res.content, {
+                language: voiceSettings.speechLanguage,
+                voiceURI: voiceSettings.selectedVoiceURI,
+                rate: voiceSettings.speechRate,
+                volume: voiceSettings.speechVolume,
+                onEnd: () => {
+                  if (isMountedRef.current) setVoiceState('idle');
+                },
+                onError: () => {
+                  if (isMountedRef.current) setVoiceState('idle');
+                },
+              });
+            } else if (isMountedRef.current) {
+              setVoiceState('idle');
+            }
           },
           onError: (err) => {
             if (!isMountedRef.current || seq !== currentRequestSeqRef.current) return;
             setErrorMessage(err.message);
+            if (isVoiceModeActive) {
+              setVoiceState('error');
+              setVoiceError(err.message);
+            }
             setCurrentPhase('failed');
             setPhaseDetail('Request failed — retry or use local study guide');
             setMessages((prev) =>
@@ -585,6 +719,7 @@ export default function Learn() {
   };
 
   const handleModeChange = (newMode: AIMode) => {
+    setIsAiModeExpanded(false); // Auto-minimize mode selection menu immediately
     if (newMode === activeMode) return;
     setErrorMessage(null);
 
@@ -723,19 +858,161 @@ export default function Learn() {
       setQuizQuestionCount((c) => c + 1);
     }
 
+    // Check if this is an explicit image generation request (routed separately from Ollama text LLM)
+    if (isImageGenerationRequest(userMessageContent)) {
+      const newUserMsg: ChatMessage = {
+        id: Date.now(),
+        role: 'user',
+        content: userMessageContent,
+        status: 'completed',
+        timestamp: Date.now(),
+      };
+
+      const genResult = await generateExplicitImage(userMessageContent);
+      const assistantImgMsg: ChatMessage = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: genResult.success
+          ? (genResult.caption || `Synthetic AI illustration generated for "${genResult.prompt}".`)
+          : (genResult.error || 'Generative image service is unconfigured.'),
+        status: 'completed',
+        source: 'cloud',
+        model: genResult.label,
+        timestamp: Date.now(),
+        visual: genResult.success && genResult.imageUrl
+          ? {
+              format: 'image_gallery',
+              title: `AI-Generated: ${genResult.prompt}`,
+              summary: 'Explicit AI-generated synthetic illustration.',
+              topic: genResult.prompt,
+              images: [
+                {
+                  id: 'ai-gen-1',
+                  title: genResult.prompt,
+                  url: genResult.imageUrl,
+                  thumbnail: genResult.imageUrl,
+                  description: `Synthetic AI illustration for "${genResult.prompt}".`,
+                  author: 'Configured Image Model',
+                  license: 'AI Generated',
+                  sourceUrl: genResult.imageUrl,
+                },
+              ],
+            }
+          : undefined,
+      };
+
+      setMessages((prev) => [...prev, newUserMsg, assistantImgMsg]);
+      if (user?.id) {
+        try {
+          await saveChatMessage(user.id, 'user', userMessageContent, activeTopic);
+          await saveChatMessage(user.id, 'assistant', assistantImgMsg.content, activeTopic);
+        } catch (e) {
+          console.warn('Failed to save message', e);
+        }
+      }
+      return;
+    }
+
     const actionType = normalizeAction(userMessageContent);
-    const isVisualRequest =
+    const isExplicitShowVisually =
       options?.isVisual ||
       actionType === 'Show visually' ||
       userMessageContent.toLowerCase().startsWith('show visually') ||
       userMessageContent.toLowerCase().startsWith('visualize');
 
+    if (isExplicitShowVisually) {
+      setInputValue('');
+      void handleShowVisually();
+      return;
+    }
+
     let promptToSend = options?.promptContent;
-    if (!promptToSend && isFollowUpAction(userMessageContent)) {
-      const followUp = buildFollowUpContext(messages, userMessageContent);
-      promptToSend = followUp.promptContent;
+    if (!promptToSend) {
+      if (isFollowUpAction(userMessageContent)) {
+        const followUp = buildFollowUpContext(messages, userMessageContent);
+        promptToSend = followUp.promptContent;
+      } else {
+        const resolved = resolveConversationalFollowUp(messages, userMessageContent);
+        if (resolved.resolvedPrompt !== userMessageContent) {
+          promptToSend = resolved.resolvedPrompt;
+        }
+      }
     }
     const effectivePrompt = promptToSend || userMessageContent;
+
+    // Detect subject switch intent to update URL parameters and curriculum selector immediately
+    const switchRelevance = classifyTopicRelevance(effectivePrompt, resolvedActiveTopicMeta.id);
+    if (switchRelevance.category === 'subject_switch_intent' && switchRelevance.targetTopic) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set('topic', switchRelevance.targetTopic.id);
+      setSearchParams(nextParams);
+    }
+
+    // 0. Action Execution Engine Check (Navigation, Study Planner, Quiz Launch, Recommendations)
+    const actionContext = {
+      userId: user?.id || 'guest',
+      userName: user?.name,
+      activeTopic: activeTopic,
+      navigate: (path: string) => navigate(path),
+      openVoiceMode: () => {
+        setIsVoiceModeActive(true);
+        if (!isVoicePrivacyAcknowledged()) {
+          setIsPrivacyModalOpen(true);
+        }
+      },
+      stopSpeaking: () => handleStopSpeaking(),
+      repeatAnswer: () => {
+        const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant' && m.content.trim());
+        if (lastAssistant) {
+          void speechSynthesisService.speak(lastAssistant.content, {
+            language: voiceSettings.speechLanguage,
+            voiceURI: voiceSettings.selectedVoiceURI,
+            rate: voiceSettings.speechRate,
+            volume: voiceSettings.speechVolume,
+          });
+        }
+      },
+    };
+
+    const actionCheck = await actionExecutionService.handleUserInput(
+      userMessageContent,
+      actionContext,
+      activeMode,
+      aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL
+    );
+
+    if (actionCheck.isAction && actionCheck.plan) {
+      const newUserMsg: ChatMessage = {
+        id: Date.now(),
+        role: 'user',
+        content: userMessageContent,
+        status: 'completed',
+        timestamp: Date.now(),
+      };
+
+      const assistantActionMsg: ChatMessage = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: actionCheck.plan.summary,
+        status: 'completed',
+        actionPlan: actionCheck.plan,
+        source: activeMode === 'ollama' ? 'ollama' : activeMode === 'offline' ? 'local' : 'cloud',
+        model: activeMode === 'ollama' ? (aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL) : 'MindMate Action Engine',
+        timestamp: Date.now(),
+      };
+
+      setMessages((prev) => [...prev, newUserMsg, assistantActionMsg]);
+
+      if (user?.id) {
+        try {
+          await saveChatMessage(user.id, 'user', userMessageContent, activeTopic);
+          recordStudyActivity();
+        } catch (e) {
+          console.warn('Failed to save message to database', e);
+        }
+      }
+      return;
+    }
 
     const newUserMsg: ChatMessage = {
       id: Date.now(),
@@ -747,21 +1024,34 @@ export default function Learn() {
     };
 
     const tempAssistantId = Date.now() + 1;
+    const initialExpectedSource =
+      activeMode === 'online'
+        ? 'cloud'
+        : activeMode === 'ollama'
+          ? 'ollama'
+          : activeMode === 'offline'
+            ? 'local'
+            : undefined;
+
+    const initialExpectedModel =
+      activeMode === 'ollama'
+        ? aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL
+        : activeMode === 'offline'
+          ? localWebLLMAdapter.getModelId() || DEFAULT_LOCAL_MODEL
+          : activeMode === 'online'
+            ? 'Gemini 3.5 Flash'
+            : undefined;
+
+    const initialBadge = formatProviderBadge(initialExpectedSource, initialExpectedModel);
+
     const initialAssistantMsg: ChatMessage = {
       id: tempAssistantId,
       role: 'assistant',
       content: '',
       status: 'preparing',
       requestPrompt: effectivePrompt,
-      source:
-        activeMode === 'online'
-          ? 'cloud'
-          : activeMode === 'ollama'
-            ? 'ollama'
-            : activeMode === 'offline'
-              ? 'local'
-              : undefined,
-      model: activeMode === 'ollama' ? aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL : undefined,
+      source: initialExpectedSource,
+      model: initialBadge.modelLabel,
       timestamp: Date.now(),
     };
 
@@ -777,31 +1067,68 @@ export default function Learn() {
       }
     }
 
-    // Trigger visual learning generation if requested
-    if (isVisualRequest) {
-      const precedingTurn = findPrecedingTurn(messages);
-      const qForVisual = precedingTurn?.question || userMessageContent;
-      const aForVisual = precedingTurn?.answer || '';
-      const sForVisual = precedingTurn?.subject || activeTopic || 'Topic';
+    // Trigger automatic visual learning generation if question strongly matches visual formats
+    const userRelevance = classifyTopicRelevance(effectivePrompt, resolvedActiveTopicMeta.id);
+    const autoVisualIntent =
+      userRelevance.intent === 'person_biography' ||
+      userRelevance.intent === 'visual_request' ||
+      userMessageContent.toLowerCase().includes('pandas') ||
+      userMessageContent.toLowerCase().includes('what is a cpu') ||
+      userMessageContent.toLowerCase().includes('cpu architecture') ||
+      userMessageContent.toLowerCase().includes('water cycle') ||
+      (userMessageContent.toLowerCase().includes('stack') && userMessageContent.toLowerCase().includes('queue')) ||
+      (userMessageContent.toLowerCase().includes('mindmate') && userMessageContent.toLowerCase().includes('architecture'));
+
+    if (autoVisualIntent) {
+      const sForVisual =
+        extractEntityName(userMessageContent) ||
+        extractVisualSubject(userMessageContent, activeTopic) ||
+        activeTopic;
+
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === tempAssistantId
+            ? { ...msg, visualLoading: true, visualLoadingSubject: sForVisual }
+            : msg
+        )
+      );
 
       generateVisualRepresentation({
-        question: qForVisual,
-        answer: aForVisual,
+        question: userMessageContent,
+        answer: '',
         subject: sForVisual,
         mode: activeMode,
         isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
-        previousQuestion: precedingTurn?.question,
-        previousAnswer: precedingTurn?.answer,
       })
         .then((visualPayload) => {
           setMessages((prev) =>
             prev.map((msg) =>
-              msg.id === tempAssistantId ? { ...msg, visual: visualPayload } : msg
+              msg.id === tempAssistantId
+                ? {
+                    ...msg,
+                    visual: visualPayload,
+                    visualLoading: false,
+                    visualLoadingSubject: undefined,
+                    visualError: undefined,
+                  }
+                : msg
             )
           );
         })
         .catch((err) => {
-          console.warn('[VisualEngine] Generation failed:', err);
+          console.warn('[VisualEngine] Auto generation failed:', err);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === tempAssistantId
+                ? {
+                    ...msg,
+                    visualLoading: false,
+                    visualLoadingSubject: undefined,
+                    visualError: err?.message || 'Failed to generate visual representation.',
+                  }
+                : msg
+            )
+          );
         });
     }
 
@@ -812,14 +1139,470 @@ export default function Learn() {
     });
   };
 
+  // Dedicated Context-Aware "Show Visually" Handler
+  const handleShowVisually = async (targetMessageId?: number | string, forceRegenerate = false) => {
+    // 1. Locate the target assistant message to attach visual to.
+    let targetAssistantMsg: ChatMessage | undefined;
+    if (targetMessageId !== undefined) {
+      targetAssistantMsg = messages.find((m) => m.id === targetMessageId);
+    } else {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (
+          messages[i].role === 'assistant' &&
+          messages[i].status !== 'failed' &&
+          messages[i].status !== 'cancelled' &&
+          (messages[i].content.trim().length > 0 || messages[i].explanation?.trim())
+        ) {
+          targetAssistantMsg = messages[i];
+          break;
+        }
+      }
+    }
+
+    // Guard: Prevent double-submitting if visual is already actively loading
+    if (targetAssistantMsg?.visualLoading) {
+      return;
+    }
+
+    // Guard: If a valid visual is already displayed and forceRegenerate is false, preserve it
+    if (targetAssistantMsg?.visual && !forceRegenerate) {
+      return;
+    }
+
+    // 2. Read the specific user question and Mate AI answer for this assistant turn
+    let question = '';
+    let answer = '';
+
+    if (targetAssistantMsg) {
+      answer = [
+        targetAssistantMsg.content,
+        targetAssistantMsg.explanation,
+        targetAssistantMsg.code,
+      ].filter(Boolean).join('\n\n').trim();
+
+      const targetIdx = messages.findIndex((m) => m.id === targetAssistantMsg!.id);
+      if (targetIdx > 0) {
+        for (let i = targetIdx - 1; i >= 0; i--) {
+          if (messages[i].role === 'user' && messages[i].content?.trim()) {
+            question = messages[i].promptContent || messages[i].content.trim();
+            break;
+          }
+        }
+      }
+      if (!question && targetAssistantMsg.requestPrompt) {
+        question = targetAssistantMsg.requestPrompt;
+      }
+    }
+
+    if (!question) {
+      const precedingTurn = findPrecedingTurn(messages, undefined);
+      question = precedingTurn?.question || activeTopic;
+      if (!answer) {
+        answer = precedingTurn?.answer || '';
+      }
+    }
+
+    // Identify actual subject and best visual format
+    const subject =
+      extractEntityName(question) ||
+      extractVisualSubject(question, activeTopic) ||
+      activeTopic;
+
+    let effectiveTargetId: number | string;
+
+    if (targetAssistantMsg) {
+      effectiveTargetId = targetAssistantMsg.id;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === effectiveTargetId
+            ? {
+                ...m,
+                visualLoading: true,
+                visualLoadingSubject: subject,
+                visualError: undefined,
+              }
+            : m
+        )
+      );
+    } else {
+      effectiveTargetId = Date.now();
+      const newAssistantMsg: ChatMessage = {
+        id: effectiveTargetId,
+        role: 'assistant',
+        content: `Here is the visual diagram and conceptual model for **${subject}**:`,
+        status: 'completed',
+        source: 'local',
+        model: 'Visual Learning Engine',
+        timestamp: Date.now(),
+        visualLoading: true,
+        visualLoadingSubject: subject,
+      };
+      setMessages((prev) => [...prev, newAssistantMsg]);
+    }
+
+    // 3. Execute real visual-generation workflow using supported capabilities
+    try {
+      const visualPayload = await generateVisualRepresentation({
+        question,
+        answer,
+        subject,
+        mode: activeMode,
+        isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
+        previousQuestion: question,
+        previousAnswer: answer,
+      });
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === effectiveTargetId
+            ? {
+                ...m,
+                visual: visualPayload,
+                visualLoading: false,
+                visualLoadingSubject: undefined,
+                visualError: undefined,
+              }
+            : m
+        )
+      );
+    } catch (err: any) {
+      const errMsg =
+        err?.message ||
+        `Could not generate visual representation for "${subject}". Please check your connection and retry.`;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === effectiveTargetId
+            ? {
+                ...m,
+                visualLoading: false,
+                visualLoadingSubject: undefined,
+                visualError: errMsg,
+              }
+            : m
+        )
+      );
+    }
+  };
+
   const handleChipClick = (chip: string) => {
+    if (chip === 'Show visually') {
+      void handleShowVisually();
+      return;
+    }
     const followUp = buildFollowUpContext(messages, chip);
     handleSend(followUp.displayContent, {
       promptContent: followUp.promptContent,
       displayText: followUp.displayContent,
       startQuiz: chip === 'Quiz me',
-      isVisual: chip === 'Show visually',
     });
+  };
+
+  const handleStartListening = async () => {
+    if (!isVoicePrivacyAcknowledged()) {
+      setIsPrivacyModalOpen(true);
+      return;
+    }
+
+    setVoiceError(null);
+    setVoiceConfirmation(null);
+    setInterimTranscript('');
+    setFinalTranscript('');
+    setVoiceState('listening');
+
+    await speechRecognitionService.startListening({
+      language: voiceSettings.speechLanguage,
+      onTranscript: (payload) => {
+        setInterimTranscript(payload.interimTranscript);
+        setFinalTranscript(payload.finalTranscript);
+      },
+      onError: (err) => {
+        setVoiceError(err.message);
+        setVoiceState('error');
+      },
+      onEnd: () => {
+        if (!isGenerating) {
+          setVoiceState((prev) => (prev === 'listening' ? 'idle' : prev));
+        }
+      },
+    });
+  };
+
+  const handleStopListening = () => {
+    speechRecognitionService.stopListening();
+    setVoiceState((prev) => (prev === 'listening' ? 'idle' : prev));
+  };
+
+  const handleStopSpeaking = () => {
+    speechSynthesisService.stop();
+    setVoiceState('idle');
+  };
+
+  const handleVoiceSubmit = async (transcriptText: string) => {
+    const raw = transcriptText.trim();
+    if (!raw || isGenerating) return;
+
+    setVoiceError(null);
+    setVoiceConfirmation(null);
+
+    // 1. Evaluate deterministic voice command router
+    const commandResult = parseVoiceCommand(raw, {
+      activeTopic: activeTopic,
+      weakTopics: analyticsSnapshot?.mistakePatterns?.slice(0, 3).map((m) => m.summary) || [],
+      recommendationTopic: resolvedActiveTopicMeta.name,
+      recommendationReason: activeStrategyReason,
+      userId: user?.id || 'guest',
+    });
+
+    // Voice spoken confirmation check for pending plans ("yes", "confirm", "save it")
+    if (/^(yes|confirm|save it|save the plan|do it|approve)$/i.test(raw)) {
+      const lastPendingMsg = [...messages].reverse().find(
+        (m) => m.actionPlan && m.actionPlan.status === 'awaiting_confirmation'
+      );
+      if (lastPendingMsg && lastPendingMsg.actionPlan) {
+        const actionContext = {
+          userId: user?.id || 'guest',
+          userName: user?.name,
+          activeTopic: activeTopic,
+          navigate: (path: string) => navigate(path),
+        };
+        const res = await actionExecutionService.confirmPlan(
+          lastPendingMsg.actionPlan.id,
+          actionContext
+        );
+        setMessages((prev) =>
+          prev.map((m) => (m.id === lastPendingMsg.id ? { ...m, actionPlan: res.plan } : m))
+        );
+        const doneMsg = `Confirmed! Saved study tasks to your Planner.`;
+        setVoiceConfirmation(doneMsg);
+        if (voiceSettings.autoSpeak) {
+          setVoiceState('speaking');
+          void speechSynthesisService.speak(doneMsg, {
+            language: voiceSettings.speechLanguage,
+            voiceURI: voiceSettings.selectedVoiceURI,
+            rate: voiceSettings.speechRate,
+            volume: voiceSettings.speechVolume,
+            onEnd: () => {
+              if (isMountedRef.current) setVoiceState('idle');
+            },
+            onError: () => {
+              if (isMountedRef.current) setVoiceState('idle');
+            },
+          });
+        }
+        return;
+      }
+    }
+
+    if (commandResult.type === 'navigation' && commandResult.route) {
+      setVoiceConfirmation(commandResult.confirmationMessage || 'Navigating...');
+      if (voiceSettings.autoSpeak && commandResult.confirmationMessage) {
+        setVoiceState('speaking');
+        void speechSynthesisService.speak(commandResult.confirmationMessage, {
+          language: voiceSettings.speechLanguage,
+          voiceURI: voiceSettings.selectedVoiceURI,
+          rate: voiceSettings.speechRate,
+          volume: voiceSettings.speechVolume,
+          onEnd: () => {
+            if (isMountedRef.current) setVoiceState('idle');
+          },
+          onError: () => {
+            if (isMountedRef.current) setVoiceState('idle');
+          },
+        });
+      }
+      navigate(commandResult.route);
+      return;
+    }
+
+    if (commandResult.type === 'learning') {
+      if (commandResult.action === 'stop_speaking') {
+        handleStopSpeaking();
+        setVoiceConfirmation('Stopped speaking.');
+        return;
+      }
+
+      if (commandResult.action === 'repeat_answer') {
+        const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant' && m.content.trim());
+        if (lastAssistant) {
+          setVoiceConfirmation('Repeating latest response aloud...');
+          setVoiceState('speaking');
+          void speechSynthesisService.speak(lastAssistant.content, {
+            language: voiceSettings.speechLanguage,
+            voiceURI: voiceSettings.selectedVoiceURI,
+            rate: voiceSettings.speechRate,
+            volume: voiceSettings.speechVolume,
+            onEnd: () => {
+              if (isMountedRef.current) setVoiceState('idle');
+            },
+            onError: () => {
+              if (isMountedRef.current) setVoiceState('idle');
+            },
+          });
+        } else {
+          setVoiceError('No previous assistant response to read aloud.');
+        }
+        return;
+      }
+
+      if (commandResult.action === 'create_study_plan' || commandResult.action === 'add_planner_task') {
+        const plan = commandResult.payload?.plan;
+        if (plan) {
+          const confirmPrompt = `${plan.summary} Would you like me to confirm and schedule this plan?`;
+          setVoiceConfirmation(confirmPrompt);
+          setMessages((prev) => [
+            ...prev,
+            { id: Date.now(), role: 'user', content: raw, timestamp: Date.now() },
+            {
+              id: Date.now() + 1,
+              role: 'assistant',
+              content: plan.summary,
+              actionPlan: plan,
+              source: activeMode === 'ollama' ? 'ollama' : 'local',
+              model: aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL,
+              timestamp: Date.now() + 1,
+            },
+          ]);
+          if (voiceSettings.autoSpeak) {
+            setVoiceState('speaking');
+            void speechSynthesisService.speak(confirmPrompt, {
+              language: voiceSettings.speechLanguage,
+              voiceURI: voiceSettings.selectedVoiceURI,
+              rate: voiceSettings.speechRate,
+              volume: voiceSettings.speechVolume,
+              onEnd: () => {
+                if (isMountedRef.current) setVoiceState('idle');
+              },
+              onError: () => {
+                if (isMountedRef.current) setVoiceState('idle');
+              },
+            });
+          }
+          return;
+        }
+      }
+
+      if (commandResult.action === 'simplify') {
+        handleChipClick('Simplify');
+        return;
+      }
+
+      if (commandResult.action === 'give_example') {
+        handleChipClick('Give example');
+        return;
+      }
+
+      if (commandResult.action === 'explain_topic') {
+        handleSend(`Please explain ${activeTopic} step-by-step.`);
+        return;
+      }
+
+      if (commandResult.action === 'quiz_on_topic') {
+        const targetTopic = commandResult.payload?.topic || activeTopic;
+        navigate(`/adaptive-quiz?topic=${encodeURIComponent(targetTopic)}`);
+        return;
+      }
+
+      if (commandResult.action === 'start_followup_quiz') {
+        navigate(`/adaptive-quiz?topic=${encodeURIComponent(activeTopic)}`);
+        return;
+      }
+
+      if (commandResult.action === 'show_weak_topics') {
+        const weakList = analyticsSnapshot?.mistakePatterns?.slice(0, 3);
+        const weakText =
+          weakList && weakList.length > 0
+            ? `Based on your quiz attempts, your key focus areas are: ${weakList.map((m) => m.summary).join(', ')}.`
+            : `You have insufficient quiz attempts to identify weak topics yet. Complete a quiz on ${activeTopic} to generate mastery data.`;
+
+        setVoiceConfirmation(weakText);
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now(), role: 'user', content: raw, timestamp: Date.now() },
+          { id: Date.now() + 1, role: 'assistant', content: weakText, source: 'mock-fallback', timestamp: Date.now() + 1 },
+        ]);
+        if (voiceSettings.autoSpeak) {
+          setVoiceState('speaking');
+          void speechSynthesisService.speak(weakText, {
+            language: voiceSettings.speechLanguage,
+            voiceURI: voiceSettings.selectedVoiceURI,
+            rate: voiceSettings.speechRate,
+            volume: voiceSettings.speechVolume,
+            onEnd: () => {
+              if (isMountedRef.current) setVoiceState('idle');
+            },
+            onError: () => {
+              if (isMountedRef.current) setVoiceState('idle');
+            },
+          });
+        }
+        return;
+      }
+    }
+
+    if (commandResult.type === 'progress') {
+      let progressSummary = '';
+      if (commandResult.action === 'how_am_i_doing') {
+        const overall = analyticsSnapshot?.averageMastery ?? 0;
+        const attempts = analyticsSnapshot?.totalAttempts ?? 0;
+        progressSummary = `You have completed ${attempts} quiz attempt${attempts === 1 ? '' : 's'} with an average mastery score of ${overall}%. Your current active topic is ${activeTopic}.`;
+      } else if (commandResult.action === 'what_should_i_study_next') {
+        progressSummary = `I recommend focusing on "${activeTopic}" next because ${activeStrategyReason.toLowerCase()}.`;
+      } else if (commandResult.action === 'explain_recommendation') {
+        progressSummary = `This topic was recommended because ${activeStrategyReason}. Target strategy is ${activeStrategy}.`;
+      }
+
+      setVoiceConfirmation(progressSummary);
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now(), role: 'user', content: raw, timestamp: Date.now() },
+        { id: Date.now() + 1, role: 'assistant', content: progressSummary, source: 'mock-fallback', timestamp: Date.now() + 1 },
+      ]);
+      if (voiceSettings.autoSpeak) {
+        setVoiceState('speaking');
+        void speechSynthesisService.speak(progressSummary, {
+          language: voiceSettings.speechLanguage,
+          voiceURI: voiceSettings.selectedVoiceURI,
+          rate: voiceSettings.speechRate,
+          volume: voiceSettings.speechVolume,
+          onEnd: () => {
+            if (isMountedRef.current) setVoiceState('idle');
+          },
+          onError: () => {
+            if (isMountedRef.current) setVoiceState('idle');
+          },
+        });
+      }
+      return;
+    }
+
+    if (commandResult.type === 'clarification') {
+      const clarifyText = commandResult.clarificationQuestion || 'Could you please clarify your request?';
+      setVoiceConfirmation(clarifyText);
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now(), role: 'user', content: raw, timestamp: Date.now() },
+        { id: Date.now() + 1, role: 'assistant', content: clarifyText, source: 'mock-fallback', timestamp: Date.now() + 1 },
+      ]);
+      if (voiceSettings.autoSpeak) {
+        setVoiceState('speaking');
+        void speechSynthesisService.speak(clarifyText, {
+          language: voiceSettings.speechLanguage,
+          voiceURI: voiceSettings.selectedVoiceURI,
+          rate: voiceSettings.speechRate,
+          volume: voiceSettings.speechVolume,
+          onEnd: () => {
+            if (isMountedRef.current) setVoiceState('idle');
+          },
+          onError: () => {
+            if (isMountedRef.current) setVoiceState('idle');
+          },
+        });
+      }
+      return;
+    }
+
+    // Default: Normal educational prompt routed to configured AI provider
+    handleSend(raw);
   };
 
   const activeMode = aiStatus?.mode || 'auto';
@@ -841,113 +1624,79 @@ export default function Learn() {
           aria-label="Mate AI chat"
           data-testid="mate-ai-chat-panel"
           data-chat-expanded={isChatExpanded ? 'true' : 'false'}
+          data-chat-maximized={isChatMaximized ? 'true' : 'false'}
           className={cn(
-            'flex-1 flex flex-col bg-surface rounded-card border border-border shadow-sm min-w-0 mate-chat-shell overflow-hidden',
-            isChatExpanded ? 'h-[600px] lg:h-full' : 'h-auto lg:self-start'
+            'flex-1 flex flex-col bg-surface rounded-card border border-[#E2E8F0] shadow-soft min-w-0 mate-chat-shell overflow-hidden transition-all duration-200',
+            isChatExpanded ? 'h-[600px] lg:h-full' : 'h-auto lg:self-start',
+            isChatMaximized && 'w-full max-w-full'
           )}
         >
           {/* Header Bar */}
           <div
             className={cn(
-              'bg-gray-50/70 dark:bg-slate-900/60 text-sm transition-colors',
-              isChatExpanded && 'border-b border-border'
+              'bg-[#F8FAFC] dark:bg-slate-900/60 text-sm transition-colors',
+              isChatExpanded && 'border-b border-[#E2E8F0]'
             )}
           >
             <div
               onClick={toggleChatExpanded}
-              className="w-full px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 cursor-pointer select-none hover:bg-gray-100/60 dark:hover:bg-slate-800/60 transition-colors"
+              className="w-full px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 cursor-pointer select-none hover:bg-[#F1F5F9]/80 dark:hover:bg-slate-800/60 transition-colors"
               data-testid="mate-ai-header"
             >
               <div className="flex items-center gap-2.5 min-w-0">
-                <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-dark/70">
-                  <Sparkles className="h-3.5 w-3.5 text-primary" />
+                <h2 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-dark">
+                  <Sparkles className="h-3.5 w-3.5 text-[#4F46E5]" />
                   <span>Mate AI</span>
                 </h2>
 
                 <span
-                  data-testid="mate-ai-mode-badge"
+                  data-testid="mate-ai-status-indicator"
                   className={cn(
-                    'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold capitalize',
-                    activeMode === 'online' && 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-                    activeMode === 'ollama' && 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-                    activeMode === 'offline' && 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
-                    activeMode === 'auto' && 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
+                    'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border',
+                    isGenerating
+                      ? 'bg-[#EFF6FF] text-[#1D4ED8] border-[#BFDBFE]'
+                      : (!isOnline || activeMode === 'offline')
+                        ? 'bg-[#ECFDF5] text-[#047857] border-[#A7F3D0]'
+                        : 'bg-[#ECFDF5] text-[#047857] border-[#A7F3D0]'
                   )}
                 >
-                  {activeMode === 'ollama' ? 'Ollama Local AI' : activeMode}
-                </span>
-
-                {!isChatExpanded && isGenerating && (
                   <span
-                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[11px] font-semibold"
-                    role="status"
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                    Generating…
-                  </span>
-                )}
+                    className={cn(
+                      'w-1.5 h-1.5 rounded-full',
+                      isGenerating
+                        ? 'bg-[#1D4ED8] animate-pulse'
+                        : 'bg-[#047857]'
+                    )}
+                  />
+                  {isGenerating
+                    ? 'Thinking'
+                    : (!isOnline || activeMode === 'offline')
+                      ? 'Offline mode ready'
+                      : 'Ready'}
+                </span>
               </div>
 
               <div className="flex items-center gap-2 sm:gap-3 ml-auto">
-                <div className="hidden sm:flex items-center gap-2 text-xs" data-testid="mate-ai-provider-badge">
-                  {activeMode === 'online' && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 font-medium border border-indigo-100 dark:border-indigo-900">
-                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-pulse" />
-                      Cloud AI ({aiStatus?.cloudModel || 'Gemini 3.5 Flash'})
-                    </span>
+                {/* Voice Mode Toggle Pill */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsVoiceModeActive(!isVoiceModeActive);
+                  }}
+                  data-testid="mate-ai-voice-mode-toggle"
+                  aria-pressed={isVoiceModeActive}
+                  aria-label={isVoiceModeActive ? 'Switch to text chat' : 'Open Mate Voice Assistant'}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 h-8 rounded-lg border px-2.5 text-xs font-semibold transition-colors shadow-2xs',
+                    isVoiceModeActive
+                      ? 'bg-primary text-white border-primary shadow-xs'
+                      : 'bg-surface border-border text-dark hover:border-primary/50 hover:bg-indigo-50/50 hover:text-primary'
                   )}
-
-                  {activeMode === 'ollama' && (
-                    <span
-                      className={cn(
-                        'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-medium border',
-                        aiStatus?.ollamaAvailable
-                          ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                          : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'w-1.5 h-1.5 rounded-full',
-                          aiStatus?.ollamaAvailable ? 'bg-emerald-600' : 'bg-amber-500'
-                        )}
-                      />
-                      {aiStatus?.ollamaAvailable
-                        ? `Ollama Ready (${aiStatus.ollamaModel})`
-                        : `Ollama (${aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL}) — ${
-                            aiStatus?.ollamaStatus === 'model_missing'
-                              ? 'Model Missing'
-                              : 'Not Running'
-                          }`}
-                    </span>
-                  )}
-
-                  {activeMode === 'offline' && (
-                    <span
-                      className={cn(
-                        'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-medium border',
-                        isLocalReady
-                          ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                          : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'w-1.5 h-1.5 rounded-full',
-                          isLocalReady ? 'bg-emerald-600' : 'bg-amber-500'
-                        )}
-                      />
-                      {isLocalReady ? 'Mate AI (Offline) Ready' : 'Mate AI Model Required'}
-                    </span>
-                  )}
-
-                  {activeMode === 'auto' && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 font-medium border border-purple-100 dark:border-purple-900">
-                      <Sparkles className="h-3.5 w-3.5 text-purple-600" />
-                      Auto Hybrid ({aiStatus?.ollamaAvailable ? 'Cloud + Ollama Ready' : isLocalReady ? 'Cloud + WebGPU Ready' : 'Cloud Preferred'})
-                    </span>
-                  )}
-                </div>
+                >
+                  <Mic className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">{isVoiceModeActive ? 'Voice Assistant' : 'Voice Mode'}</span>
+                </button>
 
                 {/* Mode Selector Toggle */}
                 <button
@@ -958,7 +1707,7 @@ export default function Learn() {
                   }}
                   aria-expanded={isAiModeExpanded}
                   aria-label="Toggle Mate AI settings"
-                  className="inline-flex items-center gap-1 h-8 rounded-lg border border-border bg-surface px-2 text-xs font-medium text-muted hover:text-dark hover:border-primary/40 transition-colors"
+                  className="inline-flex items-center gap-1 h-8 rounded-lg border border-[#CBD5E1] bg-surface px-2.5 text-xs font-medium text-muted hover:text-dark hover:border-[#4F46E5] transition-colors shadow-2xs"
                 >
                   <SlidersHorizontal className="h-3.5 w-3.5" />
                   <span className="hidden sm:inline">Modes</span>
@@ -970,24 +1719,24 @@ export default function Learn() {
                   />
                 </button>
 
-                {/* Chat Expand/Collapse */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleChatExpanded();
-                  }}
-                  aria-expanded={isChatExpanded}
-                  aria-label={isChatExpanded ? 'Collapse Mate AI chat' : 'Expand Mate AI chat'}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-surface text-dark/70 hover:text-primary hover:border-primary/40 transition-colors"
-                >
-                  <ChevronDown
-                    className={cn(
-                      'h-4 w-4 transition-transform duration-300 ease-in-out',
-                      isChatExpanded ? 'rotate-180' : 'rotate-0'
-                    )}
-                  />
-                </button>
+                {/* Panel Controls (Content Zoom, Maximize Workspace, Expand/Collapse) */}
+                <PanelControls
+                  panelTitle="Mate AI"
+                  showZoom={isChatExpanded}
+                  zoomLevel={chatZoomLevel}
+                  onZoomIn={chatPanel.zoomIn}
+                  onZoomOut={chatPanel.zoomOut}
+                  onResetZoom={chatPanel.resetZoom}
+                  canZoomIn={chatPanel.canZoomIn}
+                  canZoomOut={chatPanel.canZoomOut}
+                  isDefaultZoom={chatPanel.isDefaultZoom}
+                  showMaximize={true}
+                  isMaximized={isChatMaximized}
+                  onToggleMaximize={toggleChatMaximized}
+                  showCollapse={true}
+                  isCollapsed={!isChatExpanded}
+                  onToggleCollapse={toggleChatExpanded}
+                />
               </div>
             </div>
 
@@ -996,14 +1745,14 @@ export default function Learn() {
               className={cn(
                 'transition-all duration-300 ease-in-out overflow-hidden px-4 sm:px-6',
                 isAiModeExpanded
-                  ? 'max-h-48 opacity-100 pb-3 pt-1 border-t border-border/40'
+                  ? 'max-h-48 opacity-100 pb-3 pt-2 border-t border-[#E2E8F0]'
                   : 'max-h-0 opacity-0 pb-0 pt-0'
               )}
             >
-              <div className="flex flex-wrap items-center justify-between gap-3 text-xs pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-muted font-medium">Select Mode:</span>
-                  <div className="inline-flex flex-wrap rounded-lg border border-border bg-surface p-0.5 shadow-sm">
+                  <span className="text-xs text-muted font-semibold">Select Mode:</span>
+                  <div className="inline-flex flex-wrap rounded-lg border border-[#CBD5E1] bg-surface p-0.5 shadow-2xs">
                     <button
                       type="button"
                       onClick={(e) => {
@@ -1011,10 +1760,10 @@ export default function Learn() {
                         handleModeChange('online');
                       }}
                       className={cn(
-                        'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                        'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
                         activeMode === 'online'
-                          ? 'bg-indigo-600 text-white shadow-xs'
-                          : 'text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800'
+                          ? 'bg-[#4F46E5] text-white shadow-2xs'
+                          : 'text-muted hover:text-dark hover:bg-[#F8FAFC]'
                       )}
                     >
                       <Cloud className="h-3.5 w-3.5" />
@@ -1028,10 +1777,10 @@ export default function Learn() {
                         handleModeChange('ollama');
                       }}
                       className={cn(
-                        'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                        'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
                         activeMode === 'ollama'
-                          ? 'bg-amber-600 text-white shadow-xs'
-                          : 'text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800'
+                          ? 'bg-[#4F46E5] text-white shadow-2xs'
+                          : 'text-muted hover:text-dark hover:bg-[#F8FAFC]'
                       )}
                     >
                       <Terminal className="h-3.5 w-3.5" />
@@ -1045,10 +1794,10 @@ export default function Learn() {
                         handleModeChange('offline');
                       }}
                       className={cn(
-                        'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                        'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
                         activeMode === 'offline'
-                          ? 'bg-emerald-600 text-white shadow-xs'
-                          : 'text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800'
+                          ? 'bg-[#4F46E5] text-white shadow-2xs'
+                          : 'text-muted hover:text-dark hover:bg-[#F8FAFC]'
                       )}
                     >
                       <HardDrive className="h-3.5 w-3.5" />
@@ -1062,10 +1811,10 @@ export default function Learn() {
                         handleModeChange('auto');
                       }}
                       className={cn(
-                        'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                        'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
                         activeMode === 'auto'
-                          ? 'bg-primary text-white shadow-xs'
-                          : 'text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800'
+                          ? 'bg-[#4F46E5] text-white shadow-2xs'
+                          : 'text-muted hover:text-dark hover:bg-[#F8FAFC]'
                       )}
                     >
                       <RefreshCw className="h-3.5 w-3.5" />
@@ -1074,7 +1823,7 @@ export default function Learn() {
                   </div>
                 </div>
 
-                <div className="text-[11px] text-muted">
+                <div className="text-[11px] text-muted font-medium">
                   {activeMode === 'online' && 'Online: Streams from Google Gemini Cloud API.'}
                   {activeMode === 'ollama' && `Ollama — Local AI: Runs local ${aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL} via http://127.0.0.1:11434 with zero cloud calls.`}
                   {activeMode === 'offline' && 'Offline: Uses SmolLM2 WebGPU in-browser with zero cloud calls.'}
@@ -1087,14 +1836,14 @@ export default function Learn() {
           {/* Chat Body */}
           <div
             data-collapsed={isChatExpanded ? 'false' : 'true'}
-            className="mate-chat-body flex-1 flex flex-col min-h-0 overflow-hidden"
+            className="mate-chat-body flex-1 flex flex-col min-h-0 overflow-hidden bg-[#F8FAFC]/50"
           >
             {/* Loading Progress Banner (Strictly for Offline WebGPU mode) */}
             {activeMode === 'offline' && progress && progress.progress < 1.0 && (
-              <div className="bg-indigo-50 dark:bg-indigo-950/50 border-b border-indigo-100 dark:border-indigo-900 p-4 animate-in fade-in">
-                <div className="flex items-center justify-between text-xs font-semibold text-indigo-900 dark:text-indigo-200 mb-1.5 gap-2">
+              <div className="bg-[#EFF6FF] border-b border-[#BFDBFE] p-4 animate-in fade-in">
+                <div className="flex items-center justify-between text-xs font-semibold text-[#1D4ED8] mb-1.5 gap-2">
                   <span className="flex items-center gap-1.5">
-                    <Download className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400 animate-bounce" />
+                    <Download className="h-3.5 w-3.5 text-[#1D4ED8] animate-bounce" />
                     {progress.text || 'Downloading and initializing local WebGPU model...'}
                   </span>
                   <div className="flex items-center gap-2">
@@ -1102,19 +1851,19 @@ export default function Learn() {
                     <button
                       type="button"
                       onClick={handleCancelLocalModelInit}
-                      className="px-2 py-0.5 rounded bg-indigo-200/80 dark:bg-indigo-800/80 text-indigo-900 dark:text-indigo-100 hover:bg-indigo-300 text-[11px] font-medium"
+                      className="px-2.5 py-0.5 rounded-md bg-surface border border-[#BFDBFE] text-[#1D4ED8] hover:bg-[#DBEAFE] text-[11px] font-semibold"
                     >
                       Cancel
                     </button>
                   </div>
                 </div>
-                <div className="w-full bg-indigo-200 dark:bg-indigo-800 h-2 rounded-full overflow-hidden">
+                <div className="w-full bg-[#DBEAFE] h-2 rounded-full overflow-hidden">
                   <div
-                    className="bg-indigo-600 dark:bg-indigo-400 h-full transition-all duration-300 rounded-full"
+                    className="bg-[#4F46E5] h-full transition-all duration-300 rounded-full"
                     style={{ width: `${Math.max(5, progress.progress * 100)}%` }}
                   />
                 </div>
-                <p className="text-[11px] text-indigo-700/80 dark:text-indigo-300/80 mt-1.5">
+                <p className="text-[11px] text-[#1E40AF] mt-1.5">
                   Model weights are cached locally in your browser CacheStorage and won't need to be downloaded again.
                 </p>
               </div>
@@ -1122,12 +1871,12 @@ export default function Learn() {
 
             {/* Error Banner */}
             {errorMessage && (
-              <div className="bg-red-50 dark:bg-red-950/50 border-b border-red-200 dark:border-red-900 p-4 text-xs text-red-800 dark:text-red-200 flex flex-wrap items-start justify-between gap-3 animate-in fade-in">
-                <div className="flex gap-2 max-w-xl">
-                  <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+              <div className="bg-[#FEF2F2] border-b border-[#FECACA] p-4 text-xs text-[#B91C1C] flex flex-wrap items-start justify-between gap-3 animate-in fade-in">
+                <div className="flex gap-2.5 max-w-xl">
+                  <AlertTriangle className="h-4 w-4 text-[#B91C1C] shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-semibold mb-0.5">AI Engine Notice</p>
-                    <p className="opacity-90 whitespace-pre-line">{errorMessage}</p>
+                    <p className="font-bold mb-0.5 text-[#991B1B]">Mate AI Assistance</p>
+                    <p className="text-dark whitespace-pre-line">{errorMessage}</p>
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -1139,20 +1888,11 @@ export default function Learn() {
                   >
                     Use Local Study Guide
                   </Button>
-                  {activeMode === 'offline' && !isLocalReady && (
-                    <Button
-                      size="sm"
-                      onClick={handleInitLocalModel}
-                      className="h-7 text-xs bg-red-600 hover:bg-red-700 text-white"
-                    >
-                      Load Local Model
-                    </Button>
-                  )}
                   <Button
-                    variant="ghost"
+                    variant="secondary"
                     size="sm"
                     onClick={handleRetry}
-                    className="h-7 text-xs text-red-700 dark:text-red-300"
+                    className="h-7 text-xs text-[#B91C1C] border-[#FECACA] hover:bg-[#FEE2E2]"
                   >
                     Retry
                   </Button>
@@ -1160,7 +1900,7 @@ export default function Learn() {
                     variant="ghost"
                     size="sm"
                     onClick={() => setErrorMessage(null)}
-                    className="h-7 text-xs text-red-700 dark:text-red-300"
+                    className="h-7 text-xs text-[#B91C1C] hover:bg-[#FEE2E2]"
                   >
                     Dismiss
                   </Button>
@@ -1168,20 +1908,84 @@ export default function Learn() {
               </div>
             )}
 
-            {/* Messages Feed */}
-            <div
-              ref={feedRef}
-              onScroll={handleFeedScroll}
-              className="flex-1 min-h-0 p-4 sm:p-6 overflow-y-auto space-y-6"
-            >
+            {isVoiceModeActive ? (
+              <div className="flex-1 min-h-0 p-4 sm:p-6 flex flex-col">
+                <VoiceAssistantPanel
+                  voiceState={voiceState}
+                  interimTranscript={interimTranscript}
+                  finalTranscript={finalTranscript}
+                  isGenerating={isGenerating}
+                  isSpeaking={voiceState === 'speaking'}
+                  autoSpeak={voiceSettings.autoSpeak}
+                  aiMode={activeMode}
+                  zoomLevel={chatZoomLevel}
+                  speechLanguage={voiceSettings.speechLanguage}
+                  onLanguageChange={(lang) => {
+                    const next = saveVoiceSettings({ speechLanguage: lang });
+                    setVoiceSettings(next);
+                  }}
+                  modelName={
+                    activeMode === 'ollama'
+                      ? (aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL)
+                      : activeMode === 'offline'
+                        ? (aiStatus?.localModelId || DEFAULT_LOCAL_MODEL)
+                        : (aiStatus?.cloudModel || 'Gemini 3.5 Flash')
+                  }
+                  latestAnswerText={
+                    [...messages].reverse().find((m) => m.role === 'assistant' && m.content.trim())?.content
+                  }
+                  activeTopic={activeTopic}
+                  errorMessage={voiceError}
+                  confirmationMessage={voiceConfirmation}
+                  onStartListening={handleStartListening}
+                  onStopListening={handleStopListening}
+                  onSendQuestion={(text) => handleVoiceSubmit(text)}
+                  onStopGenerating={handleStopGenerating}
+                  onStopSpeaking={handleStopSpeaking}
+                  onRepeatAnswer={() => {
+                    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant' && m.content.trim());
+                    if (lastAssistant) {
+                      setVoiceConfirmation('Repeating latest response aloud...');
+                      setVoiceState('speaking');
+                      void speechSynthesisService.speak(lastAssistant.content, {
+                        language: voiceSettings.speechLanguage,
+                        voiceURI: voiceSettings.selectedVoiceURI,
+                        rate: voiceSettings.speechRate,
+                        volume: voiceSettings.speechVolume,
+                        onEnd: () => {
+                          if (isMountedRef.current) setVoiceState('idle');
+                        },
+                        onError: () => {
+                          if (isMountedRef.current) setVoiceState('idle');
+                        },
+                      });
+                    }
+                  }}
+                  onToggleAutoSpeak={() => {
+                    const next = saveVoiceSettings({ autoSpeak: !voiceSettings.autoSpeak });
+                    setVoiceSettings(next);
+                  }}
+                  onReturnToTextChat={() => setIsVoiceModeActive(false)}
+                  onClearError={() => setVoiceError(null)}
+                />
+              </div>
+            ) : (
+              <>
+                {/* Messages Feed */}
+                <div
+                  ref={feedRef}
+                  onScroll={handleFeedScroll}
+                  className="flex-1 min-h-0 p-4 sm:p-6 overflow-y-auto space-y-6 transition-[font-size] duration-150 motion-reduce:transition-none"
+                  style={{ fontSize: `${chatZoomLevel}%` }}
+                >
               {messages.map((msg) => (
                 <div
                   key={msg.id}
-                  className={cn('flex gap-4 max-w-3xl', msg.role === 'user' ? 'ml-auto flex-row-reverse' : '')}
+                  className={cn('flex gap-3.5 max-w-3xl', msg.role === 'user' ? 'ml-auto flex-row-reverse' : '')}
                 >
                   <div className="shrink-0 mt-1">
                     {msg.role === 'assistant' ? (
-                      <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center text-white shadow-sm">
+                      <div className="h-8 w-8 rounded-full bg-[#4F46E5] flex items-center justify-center text-white shadow-xs">
                         <Sparkles className="h-4 w-4" />
                       </div>
                     ) : (
@@ -1192,32 +1996,11 @@ export default function Learn() {
                   <div className={cn('space-y-3 min-w-0', msg.role === 'user' ? 'text-right' : 'flex-1')}>
                     {msg.role === 'assistant' && (
                       <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted mb-1 flex-wrap">
-                        {msg.source === 'cloud' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900">
-                            <Cloud className="h-3 w-3" />
-                            Cloud AI ({msg.model || 'Gemini 3.5 Flash'})
-                          </span>
-                        )}
-                        {msg.source === 'ollama' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
-                            <Terminal className="h-3 w-3" />
-                            Ollama Local AI ({msg.model || DEFAULT_OLLAMA_MODEL})
-                          </span>
-                        )}
-                        {msg.source === 'local' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                            <HardDrive className="h-3 w-3" />
-                            Mate AI (Offline) ({msg.model ? msg.model.split('-')[0] : 'SmolLM2'})
-                          </span>
-                        )}
-                        {msg.source === 'mock-fallback' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
-                            <Brain className="h-3 w-3" />
-                            Local Curriculum Guide
-                          </span>
-                        )}
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-dark">
+                          Mate AI
+                        </span>
                         {msg.elapsedMs ? (
-                          <span className="text-[10px] text-muted font-mono bg-gray-100 dark:bg-slate-800 px-1.5 py-0.5 rounded border border-border">
+                          <span className="text-[10px] text-muted font-mono bg-[#F8FAFC] px-1.5 py-0.5 rounded border border-[#E2E8F0]">
                             {(msg.elapsedMs / 1000).toFixed(1)}s
                           </span>
                         ) : null}
@@ -1227,27 +2010,40 @@ export default function Learn() {
                     {(msg.content || !msg.code || (isGenerating && activeAssistantId === msg.id)) && (
                       <div
                         className={cn(
-                          'inline-block max-w-full rounded-2xl px-5 py-3 text-sm leading-relaxed',
+                          'inline-block max-w-full rounded-2xl px-5 py-3.5 text-sm leading-relaxed shadow-2xs',
                           msg.role === 'user'
-                            ? 'bg-primary text-white whitespace-pre-wrap'
-                            : 'bg-gray-100 dark:bg-slate-800 text-dark border border-border text-left'
+                            ? 'bg-[#EEF2FF] text-[#1E1B4B] border border-[#C7D2FE] font-medium whitespace-pre-wrap'
+                            : 'bg-surface text-dark border border-[#E2E8F0] text-left'
                         )}
                       >
                         {msg.content ? (
                           msg.role === 'assistant' ? (
                             <div className="space-y-2">
-                              <MarkdownMessage
-                                content={msg.content}
-                                streaming={isGenerating && activeAssistantId === msg.id}
-                              />
+                              {msg.actionPlan ? (
+                                <ActionExecutionCard
+                                  plan={msg.actionPlan}
+                                  onPlanUpdate={(updatedPlan) => {
+                                    setMessages((prev) =>
+                                      prev.map((m) =>
+                                        m.id === msg.id ? { ...m, actionPlan: updatedPlan } : m
+                                      )
+                                    );
+                                  }}
+                                />
+                              ) : (
+                                <MarkdownMessage
+                                  content={msg.content}
+                                  streaming={isGenerating && activeAssistantId === msg.id}
+                                />
+                              )}
                               {isGenerating && activeAssistantId === msg.id && (
                                 <span
                                   aria-hidden="true"
-                                  className="inline-block w-2 h-4 mt-1 bg-primary/70 animate-pulse align-middle rounded-xs"
+                                  className="inline-block w-2 h-4 mt-1 bg-[#4F46E5] animate-pulse align-middle rounded-xs"
                                 />
                               )}
                               {msg.status === 'cancelled' && !(isGenerating && activeAssistantId === msg.id) && (
-                                <div className="pt-2 border-t border-border/60 flex items-center gap-2">
+                                <div className="pt-2 border-t border-[#E2E8F0] flex items-center gap-2">
                                   <Button
                                     size="sm"
                                     variant="secondary"
@@ -1264,10 +2060,10 @@ export default function Learn() {
                             <span>{msg.content}</span>
                           )
                         ) : isGenerating && activeAssistantId === msg.id ? (
-                          <div className="flex flex-col gap-1.5 py-1" role="status" aria-live="polite">
+                          <div className="flex flex-col gap-1.5 py-1 px-2 rounded-lg bg-[#EFF6FF] border border-[#BFDBFE]" role="status" aria-live="polite">
                             <div className="flex items-center gap-2 text-xs">
-                              <span className="w-2 h-2 rounded-full bg-primary animate-ping" />
-                              <span className="font-semibold text-dark/90">
+                              <span className="w-2 h-2 rounded-full bg-[#1D4ED8] animate-ping" />
+                              <span className="font-semibold text-[#1D4ED8]">
                                 {phaseDetail ||
                                   (currentPhase === 'preparing'
                                     ? 'Preparing AI engine...'
@@ -1279,23 +2075,23 @@ export default function Learn() {
                                           ? 'Switching AI mode...'
                                           : 'Generating response...')}
                               </span>
-                              <span className="text-[11px] font-mono text-muted bg-surface px-1.5 py-0.5 rounded border border-border">
+                              <span className="text-[11px] font-mono text-[#1D4ED8] bg-surface px-1.5 py-0.5 rounded border border-[#BFDBFE]">
                                 {elapsedSeconds.toFixed(1)}s
                               </span>
                             </div>
                             {currentPhase === 'switching' && (
-                              <p className="text-[11px] text-primary/80 italic">
+                              <p className="text-[11px] text-[#1D4ED8] italic">
                                 Cancelled previous request. Re-routing through {activeMode.toUpperCase()} mode...
                               </p>
                             )}
                           </div>
                         ) : (
-                          <div className="space-y-2.5 py-1 max-w-xl" data-testid="failed-message-recovery">
-                            <div className="flex items-start gap-2 text-red-700 dark:text-red-300 text-xs">
+                          <div className="space-y-2.5 p-3 rounded-xl bg-[#FEF2F2] border border-[#FECACA] max-w-xl" data-testid="failed-message-recovery">
+                            <div className="flex items-start gap-2 text-[#B91C1C] text-xs">
                               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
                               <div>
-                                <p className="font-semibold">Response did not complete</p>
-                                <p className="text-dark/80 mt-0.5 whitespace-pre-line">
+                                <p className="font-bold">Response did not complete</p>
+                                <p className="text-dark mt-0.5 whitespace-pre-line">
                                   {msg.error || errorMessage || 'The selected AI provider did not return a response.'}
                                 </p>
                               </div>
@@ -1344,17 +2140,87 @@ export default function Learn() {
                     )}
 
                     {msg.explanation && (
-                      <div className="bg-indigo-50/70 dark:bg-slate-800/80 border border-indigo-100 dark:border-indigo-950/60 rounded-xl p-4 text-sm text-dark/90 text-left w-full max-w-2xl">
+                      <div className="bg-[#EFF6FF] border border-[#BFDBFE] rounded-xl p-4 text-sm text-dark text-left w-full max-w-2xl shadow-2xs">
                         <MarkdownMessage content={msg.explanation} />
+                      </div>
+                    )}
+
+                    {msg.visualLoading && (
+                      <div
+                        className="w-full max-w-2xl mt-3 rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4 shadow-xs text-left"
+                        role="status"
+                        aria-live="polite"
+                        data-testid="visual-loading-card"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="h-8 w-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-xs">
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-indigo-950 flex items-center gap-2">
+                              <span>Preparing Visual Representation</span>
+                              <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 animate-ping" />
+                            </div>
+                            <p className="text-xs text-indigo-700 mt-0.5 font-medium">
+                              Generating visual diagram for {msg.visualLoadingSubject || 'the requested subject'}...
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {msg.visualError && (
+                      <div
+                        className="w-full max-w-2xl mt-3 rounded-2xl border border-red-200 bg-red-50/70 p-4 shadow-xs text-left"
+                        role="alert"
+                        data-testid="visual-error-card"
+                      >
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                          <div className="flex items-start gap-3">
+                            <div className="h-8 w-8 rounded-lg bg-red-100 border border-red-200 flex items-center justify-center text-red-600 shrink-0">
+                              <AlertTriangle className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <div className="text-xs font-bold text-red-950">Visual Generation Failed</div>
+                              <p className="text-xs text-red-800 mt-0.5 leading-relaxed">{msg.visualError}</p>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handleShowVisually(msg.id, true)}
+                            className="h-8 text-xs font-semibold bg-white text-red-900 border-red-200 hover:bg-red-50 shadow-xs cursor-pointer shrink-0"
+                          >
+                            <RefreshCw className="h-3 w-3 mr-1.5" /> Retry Visual
+                          </Button>
+                        </div>
                       </div>
                     )}
 
                     {msg.visual && (
                       <VisualRenderer
                         visual={msg.visual}
-                        onRetry={() => handleChipClick('Show visually')}
+                        onRetry={() => handleShowVisually(msg.id, true)}
                       />
                     )}
+
+                    {msg.role === 'assistant' &&
+                      msg.status === 'completed' &&
+                      !msg.visual &&
+                      !msg.visualLoading &&
+                      !msg.visualError && (
+                        <div className="pt-1 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleShowVisually(msg.id)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-indigo-700 bg-indigo-50/80 hover:bg-indigo-100 border border-indigo-200/80 transition-colors cursor-pointer shadow-2xs"
+                            title="Generate a context-aware visual diagram for this explanation"
+                          >
+                            <Eye className="h-3.5 w-3.5 text-indigo-600" />
+                            <span>Show visually</span>
+                          </button>
+                        </div>
+                      )}
                   </div>
                 </div>
               ))}
@@ -1362,14 +2228,15 @@ export default function Learn() {
             </div>
 
             {/* Input & Action Chips */}
-            <div className="p-4 bg-gray-50/70 dark:bg-slate-900/60 border-t border-border">
-              <div className="flex flex-wrap gap-2 mb-4">
+            <div className="p-4 bg-[#F8FAFC] border-t border-[#E2E8F0]">
+              <div className="flex flex-wrap gap-2 mb-3.5">
                 {CHIPS.map((chip, i) => (
                   <button
                     key={i}
+                    type="button"
                     onClick={() => handleChipClick(chip)}
                     disabled={isGenerating}
-                    className="px-3 py-1.5 bg-surface border border-border rounded-full text-xs font-medium hover:border-primary hover:text-primary transition-colors text-muted shadow-sm disabled:opacity-50"
+                    className="px-3 py-1.5 bg-surface border border-[#CBD5E1] rounded-full text-xs font-medium hover:border-[#4F46E5] hover:text-[#4F46E5] hover:bg-[#EEF2FF]/60 transition-colors text-muted shadow-2xs disabled:opacity-50"
                   >
                     {chip}
                   </button>
@@ -1396,11 +2263,23 @@ export default function Learn() {
                       ? 'Initialize Mate AI (Offline) on the right panel to begin local tutoring...'
                       : 'Ask MindMate to explain, quiz you, or solve a problem...'
                   }
-                  className="w-full resize-none rounded-xl border border-border bg-surface pl-4 pr-24 py-3 text-sm text-dark focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent min-h-[56px] max-h-[120px] shadow-sm"
+                  className="w-full resize-none rounded-xl border border-[#CBD5E1] bg-surface pl-4 pr-24 py-3 text-sm text-dark placeholder:text-[#64748B] focus:outline-none focus:ring-2 focus:ring-[#4F46E5] focus:border-[#4F46E5] min-h-[56px] max-h-[120px] shadow-2xs transition-colors"
                   rows={1}
                 />
 
                 <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsVoiceModeActive(true);
+                      void handleStartListening();
+                    }}
+                    aria-label="Start Voice Assistant"
+                    title="Speak with Mate Voice Assistant"
+                    className="p-2 text-muted hover:text-primary hover:bg-indigo-50 rounded-lg transition-colors border border-transparent hover:border-indigo-200"
+                  >
+                    <Mic className="h-4 w-4" />
+                  </button>
                   {isGenerating ? (
                     <Button
                       size="sm"
@@ -1417,6 +2296,7 @@ export default function Learn() {
                       className="rounded-lg h-10 w-10 p-0"
                       onClick={() => handleSend(inputValue)}
                       disabled={!inputValue.trim()}
+                      aria-label="Send message"
                     >
                       <Send className="h-4 w-4" />
                     </Button>
@@ -1424,192 +2304,59 @@ export default function Learn() {
                 </div>
               </div>
             </div>
+          </>
+        )}
           </div>
         </section>
 
-        {/* Right side: Ollama Gemma 4 Status, Offline Hardware Manager & Adaptive Learning Context */}
-        <div className="w-full lg:w-[340px] flex-shrink-0 flex flex-col gap-6 h-auto lg:h-full lg:overflow-y-auto">
-          {/* Ollama Local Gemma 4 Status Card */}
-          {(activeMode === 'ollama' || activeMode === 'auto') && (
-            <Card className="border-border bg-surface shadow-sm overflow-hidden p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-sm flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-amber-600" />
-                  <span>Ollama Local AI (Gemma 4)</span>
-                </h3>
-                <span
-                  className={cn(
-                    'text-[10px] uppercase font-bold px-2 py-0.5 rounded-full',
-                    aiStatus?.ollamaAvailable
-                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-200'
-                      : 'bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200'
-                  )}
-                >
-                  {aiStatus?.ollamaAvailable
-                    ? 'Connected'
-                    : aiStatus?.ollamaStatus === 'model_missing'
-                      ? 'Model Missing'
-                      : 'Not Running'}
-                </span>
-              </div>
-
-              <div className="text-xs space-y-2">
-                <div className="flex items-center justify-between text-muted">
-                  <span>Configured Model:</span>
-                  <code className="font-mono font-bold text-dark">
-                    {aiStatus?.ollamaModel || DEFAULT_OLLAMA_MODEL}
-                  </code>
-                </div>
-                <p className="text-[11px] text-muted leading-relaxed">
-                  {aiStatus?.ollamaMessage ||
-                    'Connects to local Ollama at http://127.0.0.1:11434 with zero cloud API traffic.'}
-                </p>
-                {!aiStatus?.ollamaAvailable && aiStatus?.ollamaRecoveryGuidance && (
-                  <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-900 dark:text-amber-200 whitespace-pre-line font-mono">
-                    {aiStatus.ollamaRecoveryGuidance}
-                  </div>
-                )}
-                <div className="flex items-center gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={handleCheckOllama}
-                    disabled={checkingOllama}
-                    className="w-full text-xs h-8 flex items-center justify-center gap-1.5"
-                  >
-                    <RefreshCw className={cn('h-3.5 w-3.5', checkingOllama && 'animate-spin')} />
-                    {checkingOllama ? 'Checking 127.0.0.1:11434...' : 'Verify Ollama Status'}
-                  </Button>
-                </div>
-              </div>
-            </Card>
+        {/* Right side: Your Learning Context */}
+        <div
+          className={cn(
+            'w-full lg:w-[350px] flex-shrink-0 flex flex-col gap-4 h-auto lg:h-full lg:overflow-y-auto pr-0.5',
+            isChatMaximized && 'hidden'
           )}
-
-          {/* Offline Hardware Manager (Available in Offline & Auto modes) */}
-          {(activeMode === 'offline' || activeMode === 'auto') && (
-            <Card className="border-border bg-surface shadow-sm overflow-hidden">
-              <div
-                onClick={() => setIsLocalAiExpanded(!isLocalAiExpanded)}
-                className="p-4 flex items-center justify-between cursor-pointer select-none hover:bg-gray-50/80 dark:hover:bg-slate-800/80 transition-colors"
-                role="button"
-                tabIndex={0}
-                aria-expanded={isLocalAiExpanded}
-              >
-                <h3 className="font-semibold text-sm flex items-center gap-2">
-                  <Cpu className="h-4 w-4 text-emerald-600" />
-                  <span>Mate AI (Offline Engine)</span>
-                </h3>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={cn(
-                      'text-[10px] uppercase font-bold px-2 py-0.5 rounded-full',
-                      isLocalReady
-                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-200'
-                        : 'bg-gray-100 text-gray-600 dark:bg-slate-800 dark:text-slate-300'
-                    )}
-                  >
-                    {isLocalReady ? 'Ready' : 'Not Loaded'}
-                  </span>
-                  <ChevronDown
-                    className={cn(
-                      'h-4 w-4 text-muted transition-transform duration-300 ease-in-out',
-                      isLocalAiExpanded ? 'rotate-180' : 'rotate-0'
-                    )}
-                  />
-                </div>
-              </div>
-
-              <div
-                className={cn(
-                  'transition-all duration-300 ease-in-out overflow-hidden',
-                  isLocalAiExpanded
-                    ? 'max-h-[600px] opacity-100 border-t border-border p-5 pt-4'
-                    : 'max-h-0 opacity-0 p-0 border-t-0'
-                )}
-              >
-                <div className="space-y-4 text-xs">
-                  <div>
-                    <p className="text-muted font-semibold uppercase tracking-wider mb-1">Local Model</p>
-                    <select
-                      value={selectedLocalModel}
-                      onChange={(e) => setSelectedLocalModel(e.target.value)}
-                      disabled={isGenerating || isInitializingModel}
-                      className="w-full rounded-lg border border-border bg-surface text-dark p-2 text-xs focus:ring-2 focus:ring-primary outline-none"
-                    >
-                      {SUPPORTED_LOCAL_MODELS.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} ({m.size})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1 border-y border-border/50 text-muted">
-                    <span>Hardware Acceleration</span>
-                    <span
-                      className={cn(
-                        'font-semibold flex items-center gap-1',
-                        isWebGpu ? 'text-emerald-600' : 'text-amber-600'
-                      )}
-                    >
-                      {isWebGpu ? <CheckCircle className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
-                      {isWebGpu ? 'WebGPU Active' : 'No WebGPU'}
-                    </span>
-                  </div>
-
-                  {!isLocalReady ? (
-                    <div className="space-y-2">
-                      <Button
-                        onClick={handleInitLocalModel}
-                        disabled={!isWebGpu || isInitializingModel}
-                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-9 flex items-center justify-center gap-1.5 shadow-xs"
-                      >
-                        <Download className="h-3.5 w-3.5" />
-                        {aiStatus?.localModelCached ? 'Load Cached Model' : 'Download & Load Model'}
-                      </Button>
-                      <p className="text-[11px] text-muted leading-relaxed text-center">
-                        Requires a one-time download while online. Once cached, runs 100% on device with zero internet.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-800 rounded-lg p-3 text-emerald-900 dark:text-emerald-200 space-y-1">
-                      <p className="font-semibold flex items-center gap-1.5 text-xs">
-                        <CheckCircle className="h-4 w-4 text-emerald-600" /> Mate AI (Offline) Available
-                      </p>
-                      <p className="text-[11px] text-emerald-800/80 dark:text-emerald-300/80 leading-relaxed">
-                        Model is loaded into device memory. You can disconnect your network and continue learning without cloud connectivity.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </Card>
-          )}
-
+        >
           {/* Learning Context Card */}
-          <Card className="border-border bg-surface shadow-sm overflow-hidden">
+          <Card
+            className="shrink-0 border-[#E2E8F0] bg-surface shadow-soft overflow-hidden"
+            data-testid="learning-context-card"
+          >
             <div
-              onClick={() => setIsLearningContextExpanded(!isLearningContextExpanded)}
-              className="p-4 flex items-center justify-between cursor-pointer select-none hover:bg-gray-50/80 dark:hover:bg-slate-800/80 transition-colors"
+              onClick={contextPanel.toggleExpanded}
+              className="p-4 flex items-center justify-between cursor-pointer select-none hover:bg-[#F8FAFC] transition-colors"
               role="button"
               tabIndex={0}
-              aria-expanded={isLearningContextExpanded}
+              aria-expanded={contextPanel.isExpanded}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  contextPanel.toggleExpanded();
+                }
+              }}
             >
-              <h3 className="font-semibold text-sm flex items-center gap-2">
-                <Brain className="h-4 w-4 text-primary" />
-                <span>Adaptive Learning Context</span>
+              <h3 className="font-semibold text-sm text-dark flex items-center gap-2">
+                <Brain className="h-4 w-4 text-[#4F46E5]" />
+                <span>Your Learning Context</span>
               </h3>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
-                  {activeTopicMetric && activeTopicMetric.totalAttempts > 0
-                    ? `${activeMastery}% Mastery`
-                    : 'Unassessed'}
-                </span>
-                <ChevronDown
-                  className={cn(
-                    'h-4 w-4 text-muted transition-transform duration-300 ease-in-out',
-                    isLearningContextExpanded ? 'rotate-180' : 'rotate-0'
-                  )}
+                {isDemo ? (
+                  <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 shrink-0">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse" />
+                    DEMO DATA
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-[#EEF2FF] text-[#4338CA] border border-[#C7D2FE]">
+                    {activeTopicMetric && activeTopicMetric.totalAttempts > 0
+                      ? `${activeMastery}% Mastery`
+                      : 'Unassessed'}
+                  </span>
+                )}
+                <PanelControls
+                  panelTitle="Your Learning Context"
+                  showCollapse={true}
+                  isCollapsed={!contextPanel.isExpanded}
+                  onToggleCollapse={contextPanel.toggleExpanded}
+                  size="sm"
                 />
               </div>
             </div>
@@ -1617,12 +2364,45 @@ export default function Learn() {
             <div
               className={cn(
                 'transition-all duration-300 ease-in-out overflow-hidden',
-                isLearningContextExpanded
-                  ? 'max-h-[900px] opacity-100 border-t border-border p-5 pt-4'
+                contextPanel.isExpanded
+                  ? 'max-h-[900px] opacity-100 border-t border-[#E2E8F0] p-5 pt-4'
                   : 'max-h-0 opacity-0 p-0 border-t-0'
               )}
             >
               <div className="space-y-4">
+                {isDemo ? (
+                  <div
+                    className="rounded-xl p-3 bg-amber-50/90 border border-amber-200 text-left text-xs space-y-1 shadow-2xs"
+                    data-testid="context-demo-notice"
+                  >
+                    <div className="flex items-center gap-1.5 font-bold text-amber-900">
+                      <Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                      <span>Simulated Demo Data Active</span>
+                    </div>
+                    <p className="text-[11px] text-amber-800 leading-relaxed font-medium">
+                      Metrics shown here originate from a 14-day simulated demonstration history for profile <strong>{user?.name || 'meet8kotecha'}</strong>. These simulated results are <strong>not verified evidence</strong> of actual learning.
+                    </p>
+                  </div>
+                ) : (
+                  <div
+                    className="rounded-xl p-2.5 bg-slate-50 border border-slate-200 text-left text-xs flex items-center justify-between"
+                    data-testid="context-real-notice"
+                  >
+                    <span className="text-[11px] font-semibold text-slate-700 flex items-center gap-1.5">
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          activeTopicMetric && activeTopicMetric.totalAttempts > 0
+                            ? 'bg-emerald-500'
+                            : 'bg-slate-400'
+                        }`}
+                      />
+                      {activeTopicMetric && activeTopicMetric.totalAttempts > 0
+                        ? `Genuine Learner Data (${activeTopicMetric.totalAttempts} verified attempts)`
+                        : 'Genuine Learner Data (0 verified attempts — Unassessed)'}
+                    </span>
+                  </div>
+                )}
+
                 <div>
                   <label className="text-xs text-muted mb-1 uppercase tracking-wider font-semibold block">
                     Current Topic
@@ -1634,7 +2414,7 @@ export default function Learn() {
                       nextParams.set('topic', e.target.value);
                       setSearchParams(nextParams);
                     }}
-                    className="w-full rounded-lg border border-border bg-surface text-dark p-2 text-xs font-medium"
+                    className="w-full rounded-lg border border-[#CBD5E1] bg-surface text-dark p-2 text-xs font-medium focus:ring-2 focus:ring-[#4F46E5] focus:border-[#4F46E5] outline-none"
                   >
                     {TOPICS.map((t) => (
                       <option key={t.id} value={t.id}>
@@ -1645,29 +2425,29 @@ export default function Learn() {
                 </div>
 
                 <div>
-                  <div className="flex justify-between items-center mb-1 text-xs font-medium">
+                  <div className="flex justify-between items-center mb-1.5 text-xs font-medium">
                     <span className="text-muted uppercase tracking-wider font-semibold">
-                      Mastery ({activeConfidence} confidence)
+                      {isDemo ? 'Simulated Mastery' : 'Verified Mastery'} ({activeConfidence} confidence)
                     </span>
-                    <span className="text-primary font-semibold">
+                    <span className="text-[#4F46E5] font-bold">
                       {activeTopicMetric && activeTopicMetric.totalAttempts > 0
-                        ? `${activeMastery}% (${activeTopicMetric.correctAnswers}/${activeTopicMetric.totalAttempts})`
+                        ? `${activeMastery}% (${activeTopicMetric.correctAnswers}/${activeTopicMetric.totalAttempts}${isDemo ? ' demo' : ''})`
                         : '0 attempts'}
                     </span>
                   </div>
                   <ProgressBar value={activeMastery} className="h-1.5" />
                 </div>
 
-                <div className="rounded-lg p-3.5 bg-indigo-50/70 dark:bg-slate-800/80 border border-indigo-100 dark:border-indigo-950/60 space-y-1.5">
-                  <p className="font-semibold text-xs flex items-center gap-1.5 text-primary">
+                <div className="rounded-xl p-3.5 bg-[#EFF6FF] border border-[#BFDBFE] space-y-1.5">
+                  <p className="font-bold text-xs flex items-center gap-1.5 text-[#1D4ED8]">
                     <GitPullRequest className="h-3.5 w-3.5" />
                     Strategy: {STRATEGY_LABELS[activeStrategy]}
                   </p>
-                  <p className="text-[11px] text-dark/80 leading-relaxed">
+                  <p className="text-[11px] text-dark leading-relaxed">
                     {activeStrategyReason}
                   </p>
                   {matchingMaterial && (
-                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium pt-1">
+                    <p className="text-[11px] text-[#047857] font-semibold pt-1">
                       Grounded in uploaded note: {matchingMaterial.name}
                     </p>
                   )}
@@ -1706,6 +2486,19 @@ export default function Learn() {
           </Card>
         </div>
       </div>
+
+      <VoicePrivacyNoticeModal
+        isOpen={isPrivacyModalOpen}
+        onConfirm={() => {
+          const updated = setVoicePrivacyAcknowledged(true);
+          setVoiceSettings(updated);
+          setIsPrivacyModalOpen(false);
+          void handleStartListening();
+        }}
+        onCancel={() => {
+          setIsPrivacyModalOpen(false);
+        }}
+      />
     </AppShell>
   );
 }

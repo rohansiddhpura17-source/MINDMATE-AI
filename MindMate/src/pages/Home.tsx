@@ -8,17 +8,18 @@ import { InsightCard } from '../components/shared/InsightCard';
 import { learner as mockLearner } from '../data/mockData';
 import { useMastery } from '../hooks/useMastery';
 import { useStudyStreak } from '../hooks/useStudyStreak';
-import { Flame, Target, Zap, ArrowRight, Brain, Check } from 'lucide-react';
+import { Flame, Target, Zap, ArrowRight, Brain, Check, Sparkles, RotateCcw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAppContext } from '../context/AppContext';
 import { getProfile, getPlannerTasks } from '../lib/db';
 import { STRATEGY_LABELS } from '../services/adaptive/adaptiveLearningEngine';
+import { clearDemoProgress } from '../services/demo/demoLearnerService';
 
 export default function Home() {
   const navigate = useNavigate();
   const { user } = useAppContext();
 
-  const { snapshot } = useMastery();
+  const { snapshot, refresh } = useMastery();
   const { currentStreak, longestStreak, studyDates } = useStudyStreak();
 
   const [profile, setProfile] = useState<any>(null);
@@ -109,6 +110,47 @@ export default function Home() {
       pageSubtitle="Adaptive learning engine and live assessment analytics"
     >
       <div className="space-y-8 max-w-5xl">
+        {/* Simulated Demo Data Notice Banner */}
+        {snapshot.isDemoMode && (
+          <div
+            className="bg-amber-50/90 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs"
+            data-testid="home-demo-banner"
+          >
+            <div className="flex gap-3 items-start">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 flex items-center justify-center shrink-0 border border-amber-300 dark:border-amber-700">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-200 dark:bg-amber-900 text-amber-900 dark:text-amber-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse" />
+                    SIMULATED DEMO DATA ACTIVE
+                  </span>
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Profile: {user?.name || 'meet8kotecha'}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed font-medium">
+                  Home metrics and next actions are computed from an isolated 14-day demonstration dataset. <strong>Simulated results are not verified evidence of actual learning.</strong> Genuine learner records remain untouched.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0 sm:self-center">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  clearDemoProgress(user?.id);
+                  void refresh();
+                }}
+                className="bg-white hover:bg-amber-100/60 dark:bg-slate-800 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-800 shadow-xs font-semibold text-xs cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Clear Demo Data
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Next Best Action Hero Card (Driven by AdaptiveLearningEngine) */}
         <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-700 text-white p-8 shadow-lg">
           <div className="relative z-10 md:w-3/4">

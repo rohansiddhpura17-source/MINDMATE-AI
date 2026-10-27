@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../components/layout/AppShell';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import { usePanelState } from '../hooks/usePanelState';
+import { PanelControls } from '../components/ui/PanelControls';
 import { useAppContext } from '../context/AppContext';
 import { TOPICS, resolveTopicMetadata } from '../data/learningContent';
 import {
@@ -77,6 +79,12 @@ const INITIAL_FORM: ZoomClassInput = {
 export default function ZoomClasses() {
   const { user, showToast } = useAppContext();
   const navigate = useNavigate();
+
+  const schedulePanel = usePanelState({
+    storageKey: 'mm_panel_zoom_schedule',
+    defaultExpanded: true,
+    defaultMaximized: false,
+  });
 
   const [classes, setClasses] = useState<ZoomClassItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -291,7 +299,14 @@ export default function ZoomClasses() {
       pageTitle="Zoom Classes"
       pageSubtitle="Schedule live study sessions, join official Zoom links, and sync directly with your Weekly Planner"
     >
-      <div className="max-w-6xl mx-auto space-y-6 pb-8" data-testid="zoom-classes-page">
+      <div
+        className={
+          schedulePanel.isMaximized
+            ? 'w-full px-3 space-y-6 pb-8 transition-all duration-200'
+            : 'max-w-6xl mx-auto space-y-6 pb-8 transition-all duration-200'
+        }
+        data-testid="zoom-classes-page"
+      >
         {/* Top Summary & Action Bar */}
         <Card className="p-6 border border-border bg-surface shadow-sm">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -645,7 +660,7 @@ export default function ZoomClasses() {
           </Card>
         )}
 
-        {/* Filter Tabs */}
+        {/* Filter Tabs & Panel Controls */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="inline-flex rounded-xl border border-border bg-surface p-1 shadow-xs" role="tablist">
             {(
@@ -661,7 +676,12 @@ export default function ZoomClasses() {
                 type="button"
                 role="tab"
                 aria-selected={activeTab === tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  if (!schedulePanel.isExpanded) {
+                    schedulePanel.setIsExpanded(true);
+                  }
+                }}
                 className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 ${
                   activeTab === tab.id
                     ? 'bg-primary text-white shadow-xs'
@@ -681,10 +701,53 @@ export default function ZoomClasses() {
               </button>
             ))}
           </div>
+
+          {/* Panel Controls for Zoom Classes List */}
+          <div className="flex items-center gap-2">
+            <PanelControls
+              panelTitle="Zoom Classes Schedule"
+              showMaximize={true}
+              isMaximized={schedulePanel.isMaximized}
+              onToggleMaximize={schedulePanel.toggleMaximized}
+              showCollapse={true}
+              isCollapsed={!schedulePanel.isExpanded}
+              onToggleCollapse={schedulePanel.toggleExpanded}
+            />
+          </div>
         </div>
 
-        {/* Classes List */}
-        {loading ? (
+        {/* Classes List or Minimized Summary Card */}
+        {!schedulePanel.isExpanded ? (
+          <Card
+            data-testid="zoom-classes-minimized-card"
+            className="p-4 border border-border bg-surface shadow-xs flex flex-wrap items-center justify-between gap-3 animate-in fade-in"
+          >
+            <div className="flex items-center gap-3">
+              <div className="h-9 w-9 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                <Video className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-dark flex items-center gap-2">
+                  <span>Zoom Classes Schedule Minimized</span>
+                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-primary/10 text-primary">
+                    {activeTab}
+                  </span>
+                </p>
+                <p className="text-[11px] text-muted">
+                  {upcomingCount} Upcoming · {completedCount} Completed · {cancelledCount} Cancelled ({classes.length} Total)
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={schedulePanel.toggleExpanded}
+              className="text-xs h-7"
+            >
+              Restore Schedule View
+            </Button>
+          </Card>
+        ) : loading ? (
           <Card className="p-8 text-center text-sm text-muted">
             Loading your scheduled Zoom classes...
           </Card>

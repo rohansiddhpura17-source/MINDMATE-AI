@@ -18,6 +18,7 @@ import {
   getTopics,
   PlannerTaskData
 } from '../lib/db';
+import { isDemoModeActive, clearDemoProgress, DEMO_MODE_CHANGED_EVENT } from '../services/demo/demoLearnerService';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const TASK_TYPES = ['practice', 'recovery', 'review', 'quiz', 'assessment'] as const;
@@ -32,6 +33,15 @@ export default function Planner() {
   const [tasks, setTasks] = useState<PlannerTaskData[]>([]);
   const [profile, setProfile] = useState<any>(null);
   const [verificationTask, setVerificationTask] = useState<PlannerTaskData | null>(null);
+  const [demoActive, setDemoActive] = useState(() => isDemoModeActive(user?.id));
+
+  useEffect(() => {
+    const handleDemoChange = (e: any) => {
+      setDemoActive(Boolean(e.detail?.active));
+    };
+    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+    return () => window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+  }, []);
 
   // Filters
   const [selectedDay, setSelectedDay] = useState<string>('all');
@@ -85,6 +95,10 @@ export default function Planner() {
       }
     }
     loadData();
+
+    const reload = () => void loadData();
+    window.addEventListener('mindmate-demo-mode-changed', reload);
+    return () => window.removeEventListener('mindmate-demo-mode-changed', reload);
   }, [user]);
 
   // Open modal for Create
@@ -324,69 +338,112 @@ export default function Planner() {
 
   return (
     <AppShell pageTitle="Weekly Planner" pageSubtitle="Your personalized path to mastering study goals">
-      <div className="max-w-6xl space-y-6">
+      <div className="w-full max-w-6xl space-y-6 min-w-0">
+        {/* Simulated Demo Data Banner */}
+        {demoActive && (
+          <div
+            className="bg-amber-50/90 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs"
+            data-testid="planner-demo-banner"
+          >
+            <div className="flex gap-3 items-start">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 flex items-center justify-center shrink-0 border border-amber-300 dark:border-amber-700">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-200 dark:bg-amber-900 text-amber-900 dark:text-amber-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse" />
+                    SIMULATED DEMO DATA ACTIVE
+                  </span>
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Profile: {user?.name || 'meet8kotecha'}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed font-medium">
+                  Planner tasks are generated from an isolated 14-day simulated history. <strong>Simulated results are not verified evidence of actual learning.</strong> Genuine learner tasks remain untouched.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0 sm:self-center">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={async () => {
+                  clearDemoProgress(user?.id);
+                  setDemoActive(false);
+                  const res = await getPlannerTasks(user?.id || 'meet8kotecha');
+                  setTasks(res.data || []);
+                  showToast('Demo data cleared. Returned to genuine planner schedule.', 'info');
+                }}
+                className="bg-white hover:bg-amber-100/60 dark:bg-slate-800 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-800 shadow-xs font-semibold text-xs cursor-pointer"
+              >
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Clear Demo Data
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Goal & Progress Card */}
-        <Card className="p-6 bg-gradient-to-r from-surface via-surface to-indigo-50/40 dark:to-indigo-950/20 border-border">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
             <div className="flex-1">
-              <div className="flex items-center gap-2 text-primary font-bold mb-2 text-xs uppercase tracking-wider">
-                <Target className="h-4 w-4" /> Current Learning Goal
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 mb-2.5">
+                <Target className="h-3.5 w-3.5" /> Current Learning Goal
               </div>
-              <h2 className="text-2xl font-bold text-dark mb-1">{goalTitle}</h2>
-              <p className="text-muted text-sm">
+              <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-1 tracking-tight">{goalTitle}</h2>
+              <p className="text-slate-500 dark:text-slate-400 text-sm">
                 Target date approaching. Stay consistent to build long-term retention.
               </p>
             </div>
 
             <div className="w-full md:w-1/3 flex flex-col justify-center">
               <div className="flex justify-between text-sm font-medium mb-2">
-                <span className="text-dark font-semibold">Weekly Goal Progress</span>
-                <span className="text-primary font-bold">{completionPercent}%</span>
+                <span className="text-slate-800 dark:text-slate-200 font-semibold">Weekly Goal Progress</span>
+                <span className="text-indigo-600 dark:text-indigo-400 font-bold">{completionPercent}%</span>
               </div>
               <ProgressBar value={completionPercent} className="h-2.5" />
-              <div className="flex justify-between items-center mt-2 text-xs text-muted">
+              <div className="flex justify-between items-center mt-2 text-xs text-slate-500 dark:text-slate-400">
                 <span>{completedTasksCount} of {totalTasks} study sessions completed</span>
                 {totalTasks > 0 && completedTasksCount === totalTasks && (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                    <CheckCircle2 className="h-3.5 w-3.5" /> All Done!
+                  <span className="text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> All Done!
                   </span>
                 )}
               </div>
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              <Button onClick={() => handleOpenCreateModal()} className="shadow-sm">
+              <Button onClick={() => handleOpenCreateModal()} className="shadow-xs cursor-pointer">
                 <Plus className="h-4 w-4 mr-2" /> Add Task
               </Button>
             </div>
           </div>
-        </Card>
+        </div>
 
         {/* AI Learning Twin Recommendation Banner */}
-        <div className="bg-amber-50/90 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex gap-3">
-            <div className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex gap-3 items-start">
+            <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
-              <h4 className="font-bold text-amber-900 dark:text-amber-200 text-sm mb-0.5">
+              <h4 className="font-bold text-slate-900 dark:text-slate-100 text-sm mb-0.5">
                 Adaptive Plan Recommendation
               </h4>
-              <p className="text-xs text-amber-800/90 dark:text-amber-300/80 max-w-2xl">
+              <p className="text-xs text-slate-600 dark:text-slate-400 max-w-2xl leading-relaxed">
                 MindMate continuously tunes your schedule to bridge conceptual gaps and balance retrieval practice. Click Regenerate to automatically re-balance your study sessions.
               </p>
             </div>
           </div>
-          <div className="flex gap-2 shrink-0">
+          <div className="flex gap-2 shrink-0 sm:self-center">
             <Button
               variant="secondary"
               size="sm"
               onClick={handleRegeneratePlan}
               disabled={isRegenerating}
-              className="bg-surface hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800/60"
+              className="bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 cursor-pointer shadow-xs font-semibold"
             >
-              <RefreshCw className={`h-4 w-4 mr-2 ${isRegenerating ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-3.5 w-3.5 mr-2 text-indigo-600 dark:text-indigo-400 ${isRegenerating ? 'animate-spin' : ''}`} />
               {isRegenerating ? 'Analyzing...' : 'Regenerate Plan'}
             </Button>
           </div>
@@ -398,10 +455,10 @@ export default function Planner() {
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
             <button
               onClick={() => setSelectedDay('all')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
                 selectedDay === 'all'
-                  ? 'bg-primary text-white shadow-sm'
-                  : 'bg-surface text-muted hover:text-dark border border-border'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-slate-900 hover:bg-slate-50 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700'
               }`}
             >
               All Days ({tasks.length})
@@ -413,15 +470,15 @@ export default function Planner() {
                 <button
                   key={d}
                   onClick={() => setSelectedDay(d)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 cursor-pointer ${
                     selectedDay === d
-                      ? 'bg-primary text-white shadow-sm'
-                      : 'bg-surface text-muted hover:text-dark border border-border'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-slate-900 hover:bg-slate-50 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700'
                   }`}
                 >
                   <span>{d}</span>
-                  {isToday && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />}
-                  {count > 0 && <span className="opacity-75 text-[10px]">({count})</span>}
+                  {isToday && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
+                  {count > 0 && <span className={`text-[10px] ${selectedDay === d ? 'text-indigo-100' : 'text-slate-400'}`}>({count})</span>}
                 </button>
               );
             })}
@@ -432,7 +489,7 @@ export default function Planner() {
             <select
               value={selectedType}
               onChange={(e) => setSelectedType(e.target.value)}
-              className="rounded-xl border border-border bg-surface px-3 py-1.5 text-xs text-dark outline-none focus:border-primary"
+              className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs text-slate-800 dark:text-slate-100 outline-none focus:border-indigo-500 cursor-pointer shadow-2xs"
             >
               <option value="all">All Types</option>
               {TASK_TYPES.map(t => (
@@ -443,7 +500,7 @@ export default function Planner() {
             <select
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value as any)}
-              className="rounded-xl border border-border bg-surface px-3 py-1.5 text-xs text-dark outline-none focus:border-primary"
+              className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs text-slate-800 dark:text-slate-100 outline-none focus:border-indigo-500 cursor-pointer shadow-2xs"
             >
               <option value="all">All Status</option>
               <option value="pending">Pending</option>
@@ -455,20 +512,56 @@ export default function Planner() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search tasks..."
-              className="rounded-xl border border-border bg-surface px-3 py-1.5 text-xs text-dark outline-none focus:border-primary w-36 sm:w-44"
+              className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs text-slate-800 dark:text-slate-100 outline-none focus:border-indigo-500 w-36 sm:w-44 shadow-2xs"
             />
           </div>
         </div>
 
         {/* Planner Day Grid */}
-        <Card className="p-5 overflow-x-auto">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xs overflow-hidden">
           {loading ? (
-            <div className="py-16 text-center text-muted flex flex-col items-center justify-center">
-              <RefreshCw className="h-8 w-8 animate-spin text-primary mb-3" />
+            <div className="py-16 text-center text-slate-500 flex flex-col items-center justify-center">
+              <RefreshCw className="h-8 w-8 animate-spin text-indigo-600 mb-3" />
               <p className="text-sm font-medium">Loading your weekly study plan...</p>
             </div>
+          ) : selectedDay === 'all' ? (
+            <div className="overflow-x-auto pb-2 overscroll-x-contain">
+              <div className="flex gap-3.5 min-w-[1050px] w-full">
+                {daysData.map((dayData) => (
+                  <PlannerDay
+                    key={dayData.day}
+                    data={dayData}
+                    isToday={dayData.day === currentDay}
+                    onToggleTask={handleToggleTask}
+                    onEditTask={handleOpenEditModal}
+                    onDeleteTask={handleDeleteTask}
+                    onAddTask={handleOpenCreateModal}
+                    onStartPractice={handleStartPractice}
+                  />
+                ))}
+              </div>
+            </div>
           ) : (
-            <div className="flex min-w-[850px] gap-4">
+            <div className="max-w-md mx-auto w-full py-2 space-y-4">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-slate-900 dark:text-slate-100 text-base">
+                    Viewing {selectedDay}
+                  </span>
+                  {selectedDay === currentDay && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 px-2 py-0.5 rounded-full">
+                      Today
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDay('all')}
+                  className="text-xs text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 font-semibold hover:underline cursor-pointer"
+                >
+                  Show all days
+                </button>
+              </div>
               {daysData.map((dayData) => (
                 <PlannerDay
                   key={dayData.day}
@@ -483,22 +576,22 @@ export default function Planner() {
               ))}
             </div>
           )}
-        </Card>
+        </div>
 
       </div>
 
       {/* Add / Edit Task Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-surface border border-border rounded-2xl shadow-xl w-full max-w-md p-6 overflow-hidden">
-            <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
-              <h3 className="text-lg font-bold text-dark">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl w-full max-w-md p-6 overflow-hidden">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800 mb-4">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
                 {editingTask ? 'Edit Study Task' : 'Schedule New Study Task'}
               </h3>
               <button
                 type="button"
                 onClick={() => setIsModalOpen(false)}
-                className="p-1.5 rounded-lg text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -506,7 +599,7 @@ export default function Planner() {
 
             <form onSubmit={handleSaveTask} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-dark mb-1 uppercase tracking-wider">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 uppercase tracking-wider">
                   Task / Topic Title *
                 </label>
                 <input
@@ -515,20 +608,20 @@ export default function Planner() {
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                   placeholder="e.g. Python Function Scope & Closures"
-                  className="w-full rounded-xl border border-border bg-surface px-3 py-2.5 text-sm text-dark outline-none focus:border-primary"
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2.5 text-sm text-slate-900 dark:text-slate-100 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                   autoFocus
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-dark mb-1 uppercase tracking-wider">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 uppercase tracking-wider">
                     Day of Week
                   </label>
                   <select
                     value={formDay}
                     onChange={(e) => setFormDay(e.target.value)}
-                    className="w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-dark outline-none focus:border-primary"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 outline-none focus:border-indigo-500 cursor-pointer"
                   >
                     {DAYS_OF_WEEK.map(d => (
                       <option key={d} value={d}>{d}</option>
@@ -537,13 +630,13 @@ export default function Planner() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-dark mb-1 uppercase tracking-wider">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 uppercase tracking-wider">
                     Duration
                   </label>
                   <select
                     value={formDuration}
                     onChange={(e) => setFormDuration(e.target.value)}
-                    className="w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-dark outline-none focus:border-primary"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 outline-none focus:border-indigo-500 cursor-pointer"
                   >
                     {DURATIONS.map(dur => (
                       <option key={dur} value={dur}>{dur}</option>
@@ -554,13 +647,13 @@ export default function Planner() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-dark mb-1 uppercase tracking-wider">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 uppercase tracking-wider">
                     Session Type
                   </label>
                   <select
                     value={formType}
                     onChange={(e) => setFormType(e.target.value)}
-                    className="w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-dark outline-none focus:border-primary"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 outline-none focus:border-indigo-500 cursor-pointer"
                   >
                     {TASK_TYPES.map(t => (
                       <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
@@ -569,13 +662,13 @@ export default function Planner() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-dark mb-1 uppercase tracking-wider">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 uppercase tracking-wider">
                     Priority
                   </label>
                   <select
                     value={formPriority}
                     onChange={(e) => setFormPriority(e.target.value as any)}
-                    className="w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-dark outline-none focus:border-primary"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 outline-none focus:border-indigo-500 cursor-pointer"
                   >
                     <option value="low">Low</option>
                     <option value="medium">Medium</option>
@@ -585,26 +678,27 @@ export default function Planner() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-dark mb-1 uppercase tracking-wider">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 uppercase tracking-wider">
                   Target Due Date (Optional)
                 </label>
                 <input
                   type="date"
                   value={formDueDate}
                   onChange={(e) => setFormDueDate(e.target.value)}
-                  className="w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-dark outline-none focus:border-primary"
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 outline-none focus:border-indigo-500"
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-border mt-6">
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-800 mt-6">
                 <Button
                   type="button"
                   variant="secondary"
                   onClick={() => setIsModalOpen(false)}
+                  className="cursor-pointer"
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={isSubmitting}>
+                <Button type="submit" disabled={isSubmitting} className="cursor-pointer">
                   {isSubmitting ? 'Saving...' : editingTask ? 'Update Task' : 'Schedule Task'}
                 </Button>
               </div>
@@ -615,26 +709,26 @@ export default function Planner() {
 
       {/* Activity Verification Modal */}
       {verificationTask && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-md bg-surface rounded-2xl border border-border p-6 shadow-2xl space-y-4">
-            <div className="w-12 h-12 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center mx-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xl space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto shadow-2xs">
               <AlertTriangle className="h-6 w-6" />
             </div>
 
             <div className="text-center space-y-2">
-              <h3 className="text-lg font-bold text-dark">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
                 Activity Practice Required
               </h3>
-              <p className="text-sm text-muted">
-                To guarantee mastery retention, <span className="font-semibold text-dark">"{verificationTask.name}"</span> must be verified through practice.
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                To guarantee mastery retention, <span className="font-semibold text-slate-900 dark:text-slate-100">"{verificationTask.name}"</span> must be verified through practice.
               </p>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-primary/5 border border-primary/20 space-y-1">
-              <span className="text-[11px] font-bold text-primary uppercase tracking-wider block">
+            <div className="p-3.5 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/50 space-y-1">
+              <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider block">
                 Recommended Practice Mode:
               </span>
-              <p className="text-xs font-semibold text-dark">
+              <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
                 {verificationTask.type === 'quiz' || verificationTask.type === 'assessment'
                   ? 'Adaptive Quiz Session (Levels 1-5)'
                   : verificationTask.type === 'recovery' || verificationTask.type === 'review'
@@ -650,21 +744,21 @@ export default function Planner() {
                   setVerificationTask(null);
                   navigate(route);
                 }}
-                className="w-full font-bold flex items-center justify-center gap-2"
+                className="w-full font-bold flex items-center justify-center gap-2 cursor-pointer shadow-xs"
               >
                 <Play className="h-4 w-4 fill-white" /> Launch Practice Session Now
               </Button>
               <Button
                 variant="ghost"
                 onClick={handleForceComplete}
-                className="w-full text-xs text-muted hover:text-dark"
+                className="w-full text-xs text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 cursor-pointer"
               >
                 Mark Complete Without Practice
               </Button>
               <Button
                 variant="secondary"
                 onClick={() => setVerificationTask(null)}
-                className="w-full"
+                className="w-full cursor-pointer"
               >
                 Cancel
               </Button>

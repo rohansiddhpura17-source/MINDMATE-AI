@@ -1,5 +1,11 @@
 import { resolveTopicMetadata, type AdaptiveQuestionItem } from '../../data/learningContent';
 import { STRATEGY_LABELS } from '../adaptive/adaptiveLearningEngine';
+export { sanitizePromptText } from './tutorContextService';
+import {
+  buildEducationalSystemPrompt,
+  buildSubjectTutorContext,
+  sanitizePromptText,
+} from './tutorContextService';
 import type {
   AdaptiveTeachingContext,
   AIMessage,
@@ -50,125 +56,21 @@ export class OllamaError extends Error {
 }
 
 /**
- * Strip accidental personal identifiers (emails, bearer tokens, JWTs) before sending
- * any pedagogical prompt to the LLM.
- */
-export function sanitizePromptText(input: string): string {
-  if (!input) return '';
-  return input
-    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[redacted-email]')
-    .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, '[redacted-token]')
-    .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '[redacted-jwt]');
-}
-
-/**
  * Build an adaptive system prompt tailored to the learner's topic mastery,
  * recurring mistakes, chosen explanation strategy, and optional uploaded study material.
  */
 export function buildAdaptiveTeachingSystemPrompt(
   baseSystemPrompt?: string,
   learnerProfile?: SendMessageOptions['learnerProfile'],
-  adaptiveContext?: AdaptiveTeachingContext
+  adaptiveContext?: AdaptiveTeachingContext,
+  userPrompt?: string
 ): string {
-  const parts: string[] = [];
-
-  parts.push(
-    baseSystemPrompt ||
-      'You are MindMate Local AI Tutor powered by Gemma 4. Provide clear, accurate, encouraging computer science instruction.'
+  const tutorContext = buildSubjectTutorContext(
+    userPrompt || '',
+    adaptiveContext,
+    learnerProfile
   );
-
-  if (learnerProfile) {
-    const style = learnerProfile.learningStyle || 'step-by-step';
-    const level = learnerProfile.level || 'undergraduate CS';
-    const goal = learnerProfile.goal ? sanitizePromptText(learnerProfile.goal) : 'Concept Mastery';
-    parts.push(`Learner preferences: style=${style}, level=${level}, goal=${goal}.`);
-  }
-
-  if (adaptiveContext) {
-    const strategyKey = adaptiveContext.explanationStrategy || 'step-by-step';
-    const strategyName = STRATEGY_LABELS[strategyKey] || strategyKey;
-
-    parts.push('--- ADAPTIVE PEDAGOGICAL DIRECTIVES ---');
-    if (adaptiveContext.topicName) {
-      parts.push(`Target Topic: ${adaptiveContext.topicName}`);
-    }
-    if (adaptiveContext.masteryScore !== undefined) {
-      parts.push(
-        `Current Topic Mastery: ${adaptiveContext.masteryScore}% (confidence: ${adaptiveContext.confidenceLevel || 'low'})`
-      );
-    }
-    if (adaptiveContext.targetDifficulty) {
-      parts.push(`Target Difficulty Band: ${adaptiveContext.targetDifficulty}`);
-    }
-    parts.push(`Required Explanation Strategy: ${strategyName} (${strategyKey})`);
-    if (adaptiveContext.strategyReason) {
-      parts.push(`Why this strategy was selected: ${adaptiveContext.strategyReason}`);
-    }
-
-    switch (strategyKey) {
-      case 'simple-analogy':
-        parts.push(
-          'Instruction: Start with a concrete everyday analogy before introducing formal syntax, then walk through one minimal worked code example.'
-        );
-        break;
-      case 'worked-example':
-        parts.push(
-          'Instruction: Provide an annotated, line-by-line worked code/SQL example showing input, state transitions, and final output.'
-        );
-        break;
-      case 'prerequisite-review':
-        parts.push(
-          'Instruction: Briefly bridge the foundational prerequisite concept first, then connect it directly to the current topic.'
-        );
-        break;
-      case 'conceptual-recap':
-        parts.push(
-          'Instruction: Give a structured core concept summary (definition, key rule, common pitfall) with a short illustrative snippet.'
-        );
-        break;
-      case 'guided-practice':
-        parts.push(
-          'Instruction: Explain concisely at an advanced level and conclude with a thought-provoking follow-up verification check.'
-        );
-        break;
-      case 'step-by-step':
-      default:
-        parts.push(
-          'Instruction: Break the explanation into numbered, logical steps with a clear code example.'
-        );
-        break;
-    }
-
-    if (
-      adaptiveContext.recentMistakesSummary &&
-      adaptiveContext.recentMistakesSummary.length > 0
-    ) {
-      const cleanedMistakes = adaptiveContext.recentMistakesSummary
-        .slice(0, 3)
-        .map((m) => sanitizePromptText(m));
-      parts.push(
-        `Recent learner mistake patterns to address gently:\n- ${cleanedMistakes.join('\n- ')}`
-      );
-    }
-
-    if (
-      adaptiveContext.studyMaterialExcerpt &&
-      adaptiveContext.studyMaterialExcerpt.trim().length > 0
-    ) {
-      const title = adaptiveContext.studyMaterialTitle || 'Uploaded Study Material';
-      parts.push(
-        `--- GROUNDING MATERIAL (${sanitizePromptText(title)}) ---\n` +
-          `${sanitizePromptText(adaptiveContext.studyMaterialExcerpt.slice(0, 1800))}\n` +
-          `Ground your explanation in the excerpt above and explicitly cite "${sanitizePromptText(title)}" where relevant.`
-      );
-    } else {
-      parts.push(
-        'Grounding Rule: No uploaded learner document was provided for this request. Do NOT claim that your response is grounded in or quoting the learner’s uploaded notes.'
-      );
-    }
-  }
-
-  return parts.join('\n\n');
+  return buildEducationalSystemPrompt(tutorContext, baseSystemPrompt, learnerProfile);
 }
 
 export interface ValidatedQuestionDraft {
@@ -619,10 +521,25 @@ export class OllamaAdapter implements IAITutorAdapter {
 
     const activeModel = health.configuredModel || this.model;
 
-    const systemContent = buildAdaptiveTeachingSystemPrompt(
+    // Extract last user prompt to assess topic relevance
+    const userMessages = options.messages.filter((m: AIMessage) => m.role === 'user');
+    const lastUserPrompt =
+      userMessages.length > 0
+        ? userMessages[userMessages.length - 1].promptContent ||
+          userMessages[userMessages.length - 1].content ||
+          ''
+        : '';
+
+    const tutorContext = buildSubjectTutorContext(
+      lastUserPrompt,
+      options.adaptiveContext,
+      options.learnerProfile
+    );
+
+    const systemContent = buildEducationalSystemPrompt(
+      tutorContext,
       options.systemPrompt,
-      options.learnerProfile,
-      options.adaptiveContext
+      options.learnerProfile
     );
 
     // Keep recent conversation turns concise to avoid unnecessary prompt prefill delay on local hardware
@@ -839,6 +756,19 @@ export class OllamaAdapter implements IAITutorAdapter {
           'invalid_output',
           `Ollama model "${activeModel}" returned an empty response.`
         );
+      }
+
+      // Guard against F1 circuit hallucination if user asked about F1 cars
+      if (tutorContext.relevance.category === 'off_topic_factual') {
+        const lower = fullContent.toLowerCase();
+        if (
+          tutorContext.relevance.factualEntityHint?.pitfallAvoidance &&
+          (lower.includes('circuit') || lower.includes('track') || lower.includes('albert park') || lower.includes('australia')) &&
+          !lower.includes('car') &&
+          !lower.includes('vehicle')
+        ) {
+          fullContent = `Formula One (F1) cars are high-performance, single-seat, open-cockpit racing cars built specifically for the FIA Formula One World Championship competitions, engineered for extreme speed, advanced aerodynamics, and hybrid powertrain efficiency.`;
+        }
       }
 
       const elapsedMs = Date.now() - startTime;

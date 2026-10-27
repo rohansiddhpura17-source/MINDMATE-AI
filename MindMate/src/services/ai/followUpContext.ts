@@ -116,7 +116,7 @@ export function findPrecedingTurn(
   // Filter out excluded ID (e.g. current pending assistant placeholder) and empty assistant messages
   const validMessages = messages.filter(
     (m) =>
-      m.id !== excludeId &&
+      (excludeId !== undefined ? m.id !== excludeId : true) &&
       (m.role === 'user' ? m.content?.trim().length > 0 : (m.content?.trim().length > 0 || m.explanation?.trim()))
   );
 
@@ -276,4 +276,48 @@ Important constraints:
     hasPrecedingContext: true,
     actionType
   };
+}
+
+/**
+ * Resolves pronoun references and follow-up inquiries against the preceding conversation turn.
+ */
+export function resolveConversationalFollowUp(
+  messages: Array<{
+    id?: number | string;
+    role: string;
+    content: string;
+    explanation?: string;
+    code?: string;
+  }>,
+  currentInput: string
+): { resolvedPrompt: string; referencedSubject?: string } {
+  const preceding = findPrecedingTurn(messages);
+  if (!preceding) {
+    return { resolvedPrompt: currentInput };
+  }
+
+  const trimmed = currentInput.trim();
+  const lower = trimmed.toLowerCase();
+
+  // If input contains pronouns or follow-up expressions referring to preceding subject
+  const hasPronoun =
+    /\b(he|she|him|her|his|they|them|their|it|that|this)\b/i.test(lower) ||
+    lower.startsWith('tell me more') ||
+    lower.startsWith('more info') ||
+    lower.startsWith('what else') ||
+    lower.startsWith('continue');
+
+  if (hasPronoun && preceding.question) {
+    const cleanSubject = preceding.question
+      .replace(/^(?:who|what|why|how|explain|tell me about)\s+(?:is|was|are)?\s*/i, '')
+      .replace(/[?!.]+$/, '')
+      .trim();
+
+    return {
+      resolvedPrompt: `[Context: In reference to previous discussion about "${cleanSubject || preceding.subject}"] ${currentInput}`,
+      referencedSubject: cleanSubject || preceding.subject
+    };
+  }
+
+  return { resolvedPrompt: currentInput, referencedSubject: preceding.subject };
 }

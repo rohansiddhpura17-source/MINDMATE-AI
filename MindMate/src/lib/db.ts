@@ -7,6 +7,12 @@ import {
   writeLocalAttempts,
 } from '../services/assessment/assessmentService';
 import type { AttemptType, PersistenceStatus } from '../services/assessment/types';
+import {
+  isDemoModeActive,
+  getDemoPlannerTasks,
+  saveDemoPlannerTasks,
+  getDemoQuizSessions,
+} from '../services/demo/demoLearnerService';
 
 // PROFILES
 export async function getProfile(userId: string) {
@@ -172,6 +178,9 @@ export async function saveQuizSession(userId: string, data: QuizSessionPayload):
 }
 
 export async function getQuizHistory(userId: string) {
+  if (isDemoModeActive(userId)) {
+    return { data: getDemoQuizSessions(userId).slice(0, 10), error: null };
+  }
   const local = getStoredQuizSessions(userId || 'guest');
   if (!isSupabaseConfigured || !userId || userId === 'guest') {
     return { data: local.slice(0, 10), error: null };
@@ -231,6 +240,9 @@ const setStoredTasks = (userId: string, tasks: PlannerTaskData[]) => {
 };
 
 export async function getPlannerTasks(userId: string) {
+  if (isDemoModeActive(userId)) {
+    return { data: getDemoPlannerTasks(userId), error: null };
+  }
   try {
     const res = await supabase.from('planner_tasks').select('*').eq('user_id', userId).order('created_at');
     if (res.error) throw res.error;
@@ -254,6 +266,12 @@ export async function createPlannerTask(task: PlannerTaskData) {
     priority: task.priority || 'medium',
     created_at: new Date().toISOString()
   };
+
+  if (isDemoModeActive(task.user_id)) {
+    const current = getDemoPlannerTasks(task.user_id);
+    saveDemoPlannerTasks(task.user_id, [...current, newTask]);
+    return { data: newTask, error: null };
+  }
 
   // Always update local storage first
   const current = getStoredTasks(task.user_id);
@@ -283,6 +301,13 @@ export async function createPlannerTask(task: PlannerTaskData) {
 }
 
 export async function updatePlannerTask(id: string, completed: boolean, userId?: string) {
+  if (isDemoModeActive(userId)) {
+    const current = getDemoPlannerTasks(userId);
+    const updated = current.map(t => t.id === id ? { ...t, completed } : t);
+    saveDemoPlannerTasks(userId, updated);
+    return { data: { id, completed }, error: null };
+  }
+
   if (userId) {
     const current = getStoredTasks(userId);
     const updated = current.map(t => t.id === id ? { ...t, completed } : t);
@@ -299,6 +324,13 @@ export async function updatePlannerTask(id: string, completed: boolean, userId?:
 }
 
 export async function updatePlannerTaskDetails(id: string, updates: Partial<PlannerTaskData>, userId?: string) {
+  if (isDemoModeActive(userId)) {
+    const current = getDemoPlannerTasks(userId);
+    const updated = current.map(t => t.id === id ? { ...t, ...updates } : t);
+    saveDemoPlannerTasks(userId, updated);
+    return { data: { id, ...updates }, error: null };
+  }
+
   if (userId) {
     const current = getStoredTasks(userId);
     const updated = current.map(t => t.id === id ? { ...t, ...updates } : t);
@@ -318,6 +350,12 @@ export async function updatePlannerTaskDetails(id: string, updates: Partial<Plan
 }
 
 export async function deletePlannerTask(id: string, userId?: string) {
+  if (isDemoModeActive(userId)) {
+    const current = getDemoPlannerTasks(userId);
+    saveDemoPlannerTasks(userId, current.filter(t => t.id !== id));
+    return { data: { id }, error: null };
+  }
+
   if (userId) {
     const current = getStoredTasks(userId);
     setStoredTasks(userId, current.filter(t => t.id !== id));
@@ -341,6 +379,11 @@ export async function batchCreatePlannerTasks(userId: string, tasks: Omit<Planne
     priority: t.priority || 'medium',
     created_at: new Date().toISOString()
   }));
+
+  if (isDemoModeActive(userId)) {
+    saveDemoPlannerTasks(userId, tasksWithUser);
+    return { data: tasksWithUser, error: null };
+  }
 
   const existing = getStoredTasks(userId);
   setStoredTasks(userId, [...existing, ...tasksWithUser]);
@@ -721,6 +764,13 @@ export async function recordQuestionAttempt(
 
 export async function getUserMistakes(userId: string) {
   const effectiveUserId = userId || 'guest';
+  if (isDemoModeActive(effectiveUserId)) {
+    const local = getStoredAttempts(effectiveUserId)
+      .filter((a) => !a.is_correct)
+      .sort((a, b) => (Date.parse(b.attempted_at) || 0) - (Date.parse(a.attempted_at) || 0));
+    return { data: local, error: null };
+  }
+
   if (isSupabaseConfigured && userId && userId !== 'guest') {
     try {
       const { data, error } = await supabase
@@ -753,6 +803,10 @@ export async function resolveMistake(userId: string, attemptId: string) {
       window.dispatchEvent(new CustomEvent(ANALYTICS_UPDATED_EVENT, { detail: { userId: effectiveUserId } }));
     }
   } catch {}
+
+  if (isDemoModeActive(effectiveUserId)) {
+    return { data: { id: attemptId, resolved: true }, error: null };
+  }
 
   if (isSupabaseConfigured && userId && userId !== 'guest') {
     try {

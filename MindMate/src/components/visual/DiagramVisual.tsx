@@ -39,6 +39,10 @@ export function DiagramVisual({ diagram, topic }: DiagramVisualProps) {
 
     async function renderDiagram() {
       setRenderError(null);
+      if (!diagram?.code || typeof diagram.code !== 'string' || !diagram.code.trim()) {
+        if (isMounted) setRenderError('Diagram definition code is missing or empty.');
+        return;
+      }
       try {
         const { svg } = await mermaid.render(diagramId, diagram.code);
         if (isMounted) {

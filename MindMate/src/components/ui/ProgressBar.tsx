@@ -28,7 +28,7 @@ export function ProgressBar({
           {showValue && <span className="text-muted">{Math.round(percentage)}%</span>}
         </div>
       )}
-      <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+      <div className="w-full h-2 bg-[#E2E8F0] dark:bg-slate-800 rounded-full overflow-hidden">
         <div
           className={cn("h-full transition-all duration-500 ease-in-out rounded-full", colorClass)}
           style={{ width: `${percentage}%` }}

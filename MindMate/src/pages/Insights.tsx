@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AppShell } from '../components/layout/AppShell';
 import { Card } from '../components/ui/Card';
@@ -22,12 +23,44 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
+import { useAppContext } from '../context/AppContext';
 import { useMastery } from '../hooks/useMastery';
 import { STRATEGY_LABELS } from '../services/adaptive/adaptiveLearningEngine';
+import {
+  isDemoModeActive,
+  loadDemoProgress,
+  clearDemoProgress,
+  DEMO_MODE_CHANGED_EVENT,
+} from '../services/demo/demoLearnerService';
 
 export default function Insights() {
   const navigate = useNavigate();
-  const { snapshot } = useMastery();
+  const { user, showToast } = useAppContext();
+  const { snapshot, refresh } = useMastery();
+
+  const [demoActive, setDemoActive] = useState(() => isDemoModeActive(user?.id));
+
+  useEffect(() => {
+    const handleDemoChange = (e: any) => {
+      setDemoActive(Boolean(e.detail?.active));
+    };
+    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+    return () => window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+  }, []);
+
+  const handleLoadDemo = () => {
+    const res = loadDemoProgress(user?.id);
+    setDemoActive(true);
+    void refresh();
+    showToast(`Loaded ${res.attemptsCount} demo question attempts across 8 topics.`, 'success');
+  };
+
+  const handleClearDemo = () => {
+    clearDemoProgress(user?.id);
+    setDemoActive(false);
+    void refresh();
+    showToast('Demo data cleared. Returned to your genuine learning records.', 'info');
+  };
 
   const unresolvedMistakes = snapshot.topics.reduce(
     (sum, t) => sum + t.unresolvedMistakesCount,
@@ -48,6 +81,74 @@ export default function Insights() {
       pageSubtitle="Evidence-backed recommendations, recurring mistake patterns, and topic proficiency"
     >
       <div className="max-w-5xl mx-auto space-y-8">
+
+        {/* Demo Mode Banner (When Active) */}
+        {demoActive && (
+          <div className="bg-amber-50/90 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
+            <div className="flex gap-3 items-start">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 flex items-center justify-center shrink-0 border border-amber-200 dark:border-amber-700">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-200 dark:bg-amber-900 text-amber-900 dark:text-amber-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse" />
+                    SIMULATED DEMO DATA ACTIVE
+                  </span>
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Profile: {user?.name || user?.email?.split('@')[0] || 'meet8kotecha'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-400 max-w-2xl leading-relaxed">
+                  Displaying an isolated 14-day demo learning dataset (41 attempts across 8 topics). <strong>Simulated results are not verified evidence of actual learning.</strong> Real learner records are untouched and safe.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0 sm:self-center">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleClearDemo}
+                className="bg-white hover:bg-amber-100/60 dark:bg-slate-800 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/60 shadow-xs font-semibold text-xs cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Clear Demo Data
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Empty State Banner (When Inactive and 0 Attempts) */}
+        {!demoActive && snapshot.totalAttempts === 0 && (
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 sm:p-8 text-center space-y-4 shadow-xs">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mx-auto border border-indigo-100 dark:border-indigo-900/50">
+              <Sparkles className="h-6 w-6" />
+            </div>
+            <div className="max-w-xl mx-auto space-y-1.5">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                Welcome to Learning Insights, {user?.name || 'meet8kotecha'}!
+              </h3>
+              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+                You currently have 0 question attempts recorded. Take an adaptive quiz to build your authentic assessment baseline, or load a realistic 14-day demo learner dataset to explore the topic mastery curves, recurring mistake detection, and evidence-backed recommendations.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+              <Button
+                onClick={handleLoadDemo}
+                className="shadow-sm font-semibold cursor-pointer"
+              >
+                <Sparkles className="h-4 w-4 mr-2" /> Load Demo Progress
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => navigate('/practice/adaptive-quiz')}
+                className="cursor-pointer"
+              >
+                Start Diagnostic Quiz
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Core Metric Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <Card className="p-5 border border-border flex items-center gap-4">

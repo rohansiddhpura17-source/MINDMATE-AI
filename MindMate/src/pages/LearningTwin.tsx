@@ -4,15 +4,16 @@ import { LearningTwinCard } from '../components/shared/LearningTwinCard';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Modal } from '../components/ui/Modal';
-import { Brain, BookOpen, Target, Sparkles, Settings, LineChart, Zap, Clock } from 'lucide-react';
+import { Brain, BookOpen, Target, Sparkles, Settings, LineChart, Zap, Clock, RotateCcw } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { getProfile, updateProfile } from '../lib/db';
 import { useMastery } from '../hooks/useMastery';
 import { STRATEGY_LABELS } from '../services/adaptive/adaptiveLearningEngine';
+import { clearDemoProgress } from '../services/demo/demoLearnerService';
 
 export default function LearningTwin() {
   const { user } = useAppContext();
-  const { snapshot } = useMastery();
+  const { snapshot, refresh } = useMastery();
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const [profile, setProfile] = useState<any>(null);
@@ -115,6 +116,46 @@ export default function LearningTwin() {
   return (
     <AppShell pageTitle="Learning Twin" pageSubtitle="Your personalized cognitive model">
       <div className="max-w-5xl space-y-12">
+        {/* Simulated Demo Data Banner */}
+        {snapshot.isDemoMode && (
+          <div
+            className="bg-amber-50/90 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs"
+            data-testid="twin-demo-banner"
+          >
+            <div className="flex gap-3 items-start">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 flex items-center justify-center shrink-0 border border-amber-300 dark:border-amber-700">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-200 dark:bg-amber-900 text-amber-900 dark:text-amber-100">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse" />
+                    SIMULATED DEMO DATA ACTIVE
+                  </span>
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Profile: {user?.name || 'meet8kotecha'}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed font-medium">
+                  Learning Twin estimates and recommendations are computed from a 14-day simulated history. <strong>Simulated results are not verified evidence of actual learning.</strong> Genuine learner records remain untouched.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0 sm:self-center">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  clearDemoProgress(user?.id);
+                  void refresh();
+                }}
+                className="bg-white hover:bg-amber-100/60 dark:bg-slate-800 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-800 shadow-xs font-semibold text-xs cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Clear Demo Data
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Core Layout */}
         <div className="relative">
@@ -184,20 +225,20 @@ export default function LearningTwin() {
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <Card className="p-6 border border-primary/20 bg-indigo-50/50 dark:bg-indigo-950/20">
-              <Zap className="h-6 w-6 text-primary mb-3" />
-              <h4 className="font-semibold mb-2">Explanations</h4>
-              <p className="text-sm text-dark/80">Tailors content delivery (e.g., more examples vs. theory) based on what resonates with you.</p>
+            <Card className="p-6 border border-[#C7D2FE] bg-[#EEF2FF]">
+              <Zap className="h-6 w-6 text-[#4F46E5] mb-3" />
+              <h4 className="font-semibold text-dark mb-2">Explanations</h4>
+              <p className="text-sm text-dark leading-relaxed">Tailors content delivery (e.g., more examples vs. theory) based on what resonates with you.</p>
             </Card>
-            <Card className="p-6 border border-emerald-500/20 bg-green-50/50 dark:bg-emerald-950/20">
-              <Target className="h-6 w-6 text-success mb-3" />
-              <h4 className="font-semibold mb-2">Practice Generation</h4>
-              <p className="text-sm text-dark/80">Creates custom quizzes targeting exactly the edge cases you've struggled with.</p>
+            <Card className="p-6 border border-[#A7F3D0] bg-[#ECFDF5]">
+              <Target className="h-6 w-6 text-[#047857] mb-3" />
+              <h4 className="font-semibold text-dark mb-2">Practice Generation</h4>
+              <p className="text-sm text-dark leading-relaxed">Creates custom quizzes targeting exactly the edge cases you've struggled with.</p>
             </Card>
-            <Card className="p-6 border border-amber-500/20 bg-yellow-50/50 dark:bg-amber-950/20">
-              <Clock className="h-6 w-6 text-warning mb-3" />
-              <h4 className="font-semibold mb-2">Pacing & Scheduling</h4>
-              <p className="text-sm text-dark/80">Recommends breaks and schedules reviews right before you're likely to forget.</p>
+            <Card className="p-6 border border-[#FDE68A] bg-[#FFFBEB]">
+              <Clock className="h-6 w-6 text-[#92400E] mb-3" />
+              <h4 className="font-semibold text-dark mb-2">Pacing & Scheduling</h4>
+              <p className="text-sm text-dark leading-relaxed">Recommends breaks and schedules reviews right before you're likely to forget.</p>
             </Card>
           </div>
         </div>

@@ -30,8 +30,8 @@ export function QuizResult({
   if (percentage === 100) message = 'Perfect Diagnostic Score!';
 
   return (
-    <Card className="p-8 text-center max-w-lg mx-auto">
-      <div className="inline-flex p-4 rounded-full bg-yellow-100 dark:bg-amber-950/40 text-yellow-600 dark:text-amber-400 mb-6">
+    <Card className="p-8 text-center max-w-lg mx-auto border border-[#E2E8F0] shadow-soft">
+      <div className="inline-flex p-4 rounded-full bg-[#FFFBEB] border border-[#FDE68A] text-[#92400E] mb-6">
         <Trophy className="h-12 w-12" />
       </div>
 
@@ -43,12 +43,12 @@ export function QuizResult({
       {persistenceMessage && (
         <div
           role="status"
-          className={`text-xs font-medium px-3 py-2 rounded-xl border mb-6 ${
+          className={`text-xs font-semibold px-3 py-2 rounded-xl border mb-6 ${
             persistenceStatus === 'saved_cloud'
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+              ? 'border-[#A7F3D0] bg-[#ECFDF5] text-[#047857]'
               : persistenceStatus === 'failed'
-                ? 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
-                : 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300'
+                ? 'border-[#FECACA] bg-[#FEF2F2] text-[#B91C1C]'
+                : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
           }`}
         >
           {persistenceMessage}
@@ -62,7 +62,7 @@ export function QuizResult({
               cx="64"
               cy="64"
               r="60"
-              className="stroke-gray-200 dark:stroke-slate-800"
+              className="stroke-[#E2E8F0]"
               strokeWidth="8"
               fill="none"
             />
@@ -70,7 +70,7 @@ export function QuizResult({
               cx="64"
               cy="64"
               r="60"
-              className="stroke-primary"
+              className="stroke-[#4F46E5]"
               strokeWidth="8"
               fill="none"
               strokeDasharray={`${2 * Math.PI * 60}`}
@@ -83,21 +83,21 @@ export function QuizResult({
         </div>
       </div>
 
-      <div className="bg-indigo-50/70 dark:bg-slate-800/80 border border-indigo-100 dark:border-indigo-950/60 rounded-xl p-4 mb-8 text-left flex gap-4">
-        <div className="mt-1 text-primary shrink-0">
+      <div className="bg-[#EFF6FF] border border-[#BFDBFE] rounded-xl p-4 mb-8 text-left flex gap-4">
+        <div className="mt-1 text-[#1D4ED8] shrink-0">
           <Zap className="h-5 w-5" />
         </div>
         <div className="space-y-1">
           <h4 className="font-semibold text-dark text-sm">
             Adaptive Recommendation ({nextAction ? nextAction.nextTopicName : topic})
           </h4>
-          <p className="text-xs text-dark/80 leading-relaxed">
+          <p className="text-xs text-dark leading-relaxed">
             {nextAction
               ? nextAction.reason
               : `Completed ${total} diagnostic questions at ${percentage}% accuracy. Continue with a targeted follow-up quiz to increase mastery confidence.`}
           </p>
           {nextAction && (
-            <p className="text-[11px] text-primary font-medium pt-1">
+            <p className="text-[11px] text-[#1D4ED8] font-semibold pt-1">
               Strategy: {STRATEGY_LABELS[nextAction.explanationStrategy]} • Suggested Difficulty:{' '}
               {nextAction.suggestedDifficulty.toUpperCase()} (Lvl {nextAction.suggestedDifficultyLevel})
             </p>

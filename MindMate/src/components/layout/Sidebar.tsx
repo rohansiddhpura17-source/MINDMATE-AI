@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   Home,
@@ -13,8 +13,6 @@ import {
   Settings,
   UserRound,
   Brain,
-  ChevronLeft,
-  ChevronRight,
   PanelLeftClose,
   PanelLeftOpen,
   Trophy,
@@ -46,58 +44,14 @@ export function Sidebar() {
     isOnline,
     toggleOnline,
     user,
-    sidebarWidth,
-    setSidebarWidth,
     isSidebarCollapsed,
     toggleSidebarCollapse,
     isMobileNavOpen,
-    setIsMobileNavOpen,
-    isDraggingSidebar,
-    setIsDraggingSidebar
+    setIsMobileNavOpen
   } = useAppContext();
 
   const sidebarRef = useRef<HTMLElement>(null);
   const initial = user?.name ? user.name.substring(0, 2).toUpperCase() : 'AL';
-
-  // Handle Drag Resizing
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDraggingSidebar) return;
-      // Clamp width between 200px and 360px
-      const newWidth = Math.max(200, Math.min(360, e.clientX));
-      setSidebarWidth(newWidth);
-    };
-
-    const handleMouseUp = () => {
-      if (isDraggingSidebar) {
-        setIsDraggingSidebar(false);
-        document.body.style.userSelect = '';
-        document.body.style.cursor = '';
-      }
-    };
-
-    if (isDraggingSidebar) {
-      document.body.style.userSelect = 'none';
-      document.body.style.cursor = 'col-resize';
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-    }
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDraggingSidebar, setSidebarWidth, setIsDraggingSidebar]);
-
-  const handleResizeStart = (e: React.MouseEvent) => {
-    e.preventDefault();
-    if (isSidebarCollapsed) {
-      toggleSidebarCollapse(); // uncollapse on drag attempt
-    }
-    setIsDraggingSidebar(true);
-  };
-
-  const currentWidth = isSidebarCollapsed ? 70 : sidebarWidth;
 
   const handleNavClick = () => {
     if (isMobileNavOpen) {
@@ -112,70 +66,92 @@ export function Sidebar() {
         <div
           className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 md:hidden transition-opacity"
           onClick={() => setIsMobileNavOpen(false)}
+          aria-hidden="true"
         />
       )}
 
-      {/* Main Sidebar Component */}
+      {/* Main Responsive Sidebar Component */}
       <aside
         ref={sidebarRef}
-        style={{ width: `${currentWidth}px` }}
+        aria-label="Sidebar navigation"
         className={cn(
-          "fixed inset-y-0 left-0 bg-surface border-r border-border flex flex-col z-40 select-none",
-          // Mobile responsive slide-in
-          "transition-transform duration-300 md:transition-none",
-          isMobileNavOpen ? "translate-x-0 w-72" : "-translate-x-full md:translate-x-0",
-          // Desktop collapse transition
-          !isDraggingSidebar && "transition-[width] duration-200"
+          "fixed inset-y-0 left-0 bg-surface border-r border-border flex flex-col z-40 select-none transition-all duration-200",
+          // Mobile drawer slide-in
+          isMobileNavOpen ? "translate-x-0 w-72 shadow-2xl" : "-translate-x-full md:translate-x-0",
+          // Desktop stable widths (Expanded: 256px / Collapsed: 72px)
+          isSidebarCollapsed ? "md:w-[72px]" : "md:w-64"
         )}
       >
         {/* Top Header / Logo & Collapse Toggle */}
         <div className={cn(
-          "p-4 flex items-center justify-between border-b border-border/60",
-          isSidebarCollapsed && "justify-center p-3"
+          "h-[72px] flex items-center border-b border-border/60 shrink-0",
+          isSidebarCollapsed ? "justify-center px-2" : "justify-between px-4"
         )}>
-          <div className="flex items-center gap-3 overflow-hidden">
-            <div className="bg-primary text-white p-2 rounded-xl shrink-0 shadow-xs">
-              <Brain className="h-6 w-6" />
-            </div>
-            {!isSidebarCollapsed && (
-              <div className="min-w-0">
-                <h1 className="font-bold text-lg text-dark leading-tight truncate">MindMate</h1>
-                <p className="text-[10px] font-bold text-primary tracking-wider uppercase truncate">Adaptive Twin</p>
-              </div>
-            )}
-          </div>
-
-          {/* Desktop Collapse Button */}
-          {!isSidebarCollapsed ? (
+          {isSidebarCollapsed ? (
+            /* Collapsed Desktop: Fully visible, centered brand icon with expand click handler */
             <button
               type="button"
               onClick={toggleSidebarCollapse}
-              className="p-1.5 rounded-lg text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors hidden md:block"
-              title="Collapse sidebar"
+              className="p-2 rounded-xl bg-primary text-white shadow-xs hover:bg-primary-hover transition-transform hover:scale-105 flex items-center justify-center focus:outline-hidden"
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
             >
-              <PanelLeftClose className="h-4 w-4" />
+              <Brain className="h-6 w-6" />
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={toggleSidebarCollapse}
-              className="mt-2 p-1.5 rounded-lg text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors hidden md:block"
-              title="Expand sidebar"
-            >
-              <PanelLeftOpen className="h-4 w-4" />
-            </button>
+            /* Expanded Desktop & Mobile Drawer: Full brand identity + Collapse control */
+            <>
+              <div className="flex items-center gap-3 overflow-hidden min-w-0">
+                <div className="bg-primary text-white p-2 rounded-xl shrink-0 shadow-xs">
+                  <Brain className="h-6 w-6" />
+                </div>
+                {(!isSidebarCollapsed || isMobileNavOpen) && (
+                  <div className="min-w-0">
+                    <h1 className="font-bold text-lg text-dark leading-tight truncate">MindMate</h1>
+                    <p className="text-[10px] font-bold text-primary tracking-wider uppercase truncate">Adaptive Twin</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop Collapse Button */}
+              <button
+                type="button"
+                onClick={toggleSidebarCollapse}
+                className="p-1.5 rounded-lg text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors hidden md:inline-flex items-center justify-center shrink-0"
+                title="Collapse sidebar"
+                aria-label="Collapse sidebar"
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </button>
+            </>
           )}
 
-          {/* Mobile Close Button */}
+          {/* Mobile Drawer Close Button */}
           <button
             type="button"
             onClick={() => setIsMobileNavOpen(false)}
             className="p-1.5 rounded-lg text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800 md:hidden"
             title="Close menu"
+            aria-label="Close menu"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
+
+        {/* Collapsed Desktop Dedicated Expand Control Row */}
+        {isSidebarCollapsed && (
+          <div className="hidden md:flex justify-center py-2 border-b border-border/40 shrink-0 bg-gray-50/50 dark:bg-slate-900/30">
+            <button
+              type="button"
+              onClick={toggleSidebarCollapse}
+              className="p-1.5 rounded-lg text-muted hover:text-dark hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors flex items-center justify-center shrink-0"
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </button>
+          </div>
+        )}
 
         {/* Navigation Items */}
         <nav className="flex-1 px-2.5 py-3 space-y-1 overflow-y-auto overflow-x-hidden">
@@ -188,9 +164,9 @@ export function Sidebar() {
               className={({ isActive }) => cn(
                 "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors relative group",
                 isActive
-                  ? "text-primary bg-indigo-50/80 dark:bg-indigo-950/60 font-semibold"
-                  : "text-muted hover:text-dark hover:bg-gray-100/70 dark:hover:bg-slate-800/70",
-                isSidebarCollapsed && "justify-center px-0 py-3"
+                  ? "text-[#4F46E5] bg-[#EEF2FF] dark:bg-indigo-950/60 dark:text-indigo-300 font-semibold shadow-2xs"
+                  : "text-muted hover:text-dark hover:bg-[#F8FAFC] dark:hover:bg-slate-800/70",
+                isSidebarCollapsed && "md:justify-center md:px-0 md:py-2.5"
               )}
             >
               {({ isActive }) => (
@@ -199,12 +175,12 @@ export function Sidebar() {
                     <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-primary rounded-r-full" />
                   )}
                   <item.icon className={cn("h-5 w-5 shrink-0", isActive ? "text-primary" : "text-muted group-hover:text-dark")} />
-                  {!isSidebarCollapsed && (
+                  {(!isSidebarCollapsed || isMobileNavOpen) && (
                     <span className="truncate">{item.label}</span>
                   )}
-                  {/* Tooltip in collapsed mode */}
+                  {/* Floating tooltip in collapsed desktop mode */}
                   {isSidebarCollapsed && (
-                    <div className="fixed left-[75px] ml-2 hidden group-hover:block z-50 bg-slate-900 text-white text-xs font-medium px-2.5 py-1.5 rounded-md shadow-lg pointer-events-none whitespace-nowrap">
+                    <div className="fixed left-[76px] ml-2 hidden md:group-hover:block z-50 bg-slate-900 text-white text-xs font-medium px-2.5 py-1.5 rounded-md shadow-lg pointer-events-none whitespace-nowrap">
                       {item.label}
                     </div>
                   )}
@@ -213,7 +189,7 @@ export function Sidebar() {
             </NavLink>
           ))}
 
-          <div className="my-3 border-t border-border px-1 pt-3">
+          <div className="my-2.5 border-t border-border px-1 pt-2.5">
             <NavLink
               to="/friends"
               onClick={handleNavClick}
@@ -221,9 +197,9 @@ export function Sidebar() {
               className={({ isActive }) => cn(
                 "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors relative group",
                 isActive
-                  ? "text-primary bg-indigo-50/80 dark:bg-indigo-950/60 font-semibold"
-                  : "text-muted hover:text-dark hover:bg-gray-100/70 dark:hover:bg-slate-800/70",
-                isSidebarCollapsed && "justify-center px-0 py-3"
+                  ? "text-[#4F46E5] bg-[#EEF2FF] dark:bg-indigo-950/60 dark:text-indigo-300 font-semibold"
+                  : "text-muted hover:text-dark hover:bg-[#F8FAFC] dark:hover:bg-slate-800/70",
+                isSidebarCollapsed && "md:justify-center md:px-0 md:py-2.5"
               )}
             >
               {({ isActive }) => (
@@ -232,9 +208,9 @@ export function Sidebar() {
                     <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-primary rounded-r-full" />
                   )}
                   <Users className={cn("h-5 w-5 shrink-0", isActive ? "text-primary" : "text-muted group-hover:text-dark")} />
-                  {!isSidebarCollapsed && <span className="truncate">Friends</span>}
+                  {(!isSidebarCollapsed || isMobileNavOpen) && <span className="truncate">Friends</span>}
                   {isSidebarCollapsed && (
-                    <div className="fixed left-[75px] ml-2 hidden group-hover:block z-50 bg-slate-900 text-white text-xs font-medium px-2.5 py-1.5 rounded-md shadow-lg pointer-events-none whitespace-nowrap">
+                    <div className="fixed left-[76px] ml-2 hidden md:group-hover:block z-50 bg-slate-900 text-white text-xs font-medium px-2.5 py-1.5 rounded-md shadow-lg pointer-events-none whitespace-nowrap">
                       Friends
                     </div>
                   )}
@@ -245,15 +221,15 @@ export function Sidebar() {
         </nav>
 
         {/* Footer Area: Online Status & Profile */}
-        <div className="p-3 border-t border-border mt-auto space-y-3">
+        <div className="p-3 border-t border-border mt-auto space-y-2.5 shrink-0">
           {/* Online status indicator */}
           <div
             className={cn(
               "flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-slate-900/60 rounded-xl cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors border border-border/40",
-              isSidebarCollapsed && "justify-center px-1"
+              isSidebarCollapsed && "md:justify-center md:px-1"
             )}
             onClick={toggleOnline}
-            title="Toggle online status"
+            title={isOnline ? "Status: Online (Click to toggle)" : "Status: Offline (Click to toggle)"}
           >
             <StatusIndicator isOnline={isOnline} />
           </div>
@@ -261,10 +237,10 @@ export function Sidebar() {
           {/* User profile row */}
           <div className={cn(
             "flex items-center gap-3 px-1",
-            isSidebarCollapsed && "justify-center"
+            isSidebarCollapsed && "md:justify-center md:px-0"
           )}>
             <Avatar src={user?.avatar} fallback={initial} size="sm" />
-            {!isSidebarCollapsed && (
+            {(!isSidebarCollapsed || isMobileNavOpen) && (
               <>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-bold text-dark truncate">{user?.name || 'Alex Learner'}</p>
@@ -273,8 +249,9 @@ export function Sidebar() {
                 <NavLink
                   to="/settings"
                   onClick={handleNavClick}
-                  className="text-muted hover:text-dark p-1 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
+                  className="text-muted hover:text-dark p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors shrink-0"
                   title="Settings"
+                  aria-label="Settings"
                 >
                   <Settings className="h-4 w-4" />
                 </NavLink>
@@ -282,20 +259,6 @@ export function Sidebar() {
             )}
           </div>
         </div>
-
-        {/* Drag Resize Handle (Desktop Only) */}
-        {!isSidebarCollapsed && (
-          <div
-            onMouseDown={handleResizeStart}
-            className={cn(
-              "absolute top-0 right-0 w-2 h-full cursor-col-resize z-50 group transition-colors hidden md:block",
-              isDraggingSidebar ? "bg-primary w-2.5" : "hover:bg-primary/50"
-            )}
-            title="Drag to resize sidebar width"
-          >
-            <div className="absolute right-0.5 top-1/2 -translate-y-1/2 w-1 h-8 rounded-full bg-border group-hover:bg-primary" />
-          </div>
-        )}
       </aside>
     </>
   );

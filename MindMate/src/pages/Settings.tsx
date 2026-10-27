@@ -23,12 +23,31 @@ import {
   Globe,
   Cpu,
   RefreshCw,
+  RotateCcw,
+  Mic,
+  Volume2,
+  Play,
+  Square,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { SUPPORTED_LANGUAGES } from '../data/learningContent';
 import { syncManager, SyncStatusState } from '../services/storage/syncManager';
 import { aiTutorService, AIMode, DEFAULT_OLLAMA_MODEL } from '../services/ai';
 import { localWebLLMAdapter } from '../services/ai/localWebLLMAdapter';
+import {
+  VoiceSettings,
+  SUPPORTED_SPEECH_LANGUAGES,
+  loadVoiceSettings,
+  saveVoiceSettings,
+  setVoicePrivacyAcknowledged,
+  speechSynthesisService,
+} from '../services/voice';
+import {
+  isDemoModeActive,
+  loadDemoProgress,
+  clearDemoProgress,
+  DEMO_MODE_CHANGED_EVENT,
+} from '../services/demo/demoLearnerService';
 
 type ThemeName = 'light' | 'dark' | 'aurora';
 
@@ -52,7 +71,7 @@ const DEFAULT_SETTINGS = {
 };
 
 export default function Settings() {
-  const { logout, showToast, language, setLanguage } = useAppContext();
+  const { user, logout, showToast, language, setLanguage } = useAppContext();
   const navigate = useNavigate();
 
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -60,6 +79,28 @@ export default function Settings() {
     const saved = localStorage.getItem('mindmate_theme');
     return saved === 'dark' || saved === 'aurora' ? saved : 'light';
   });
+
+  const [demoActive, setDemoActive] = useState(() => isDemoModeActive(user?.id));
+
+  useEffect(() => {
+    const handleDemoChange = (e: any) => {
+      setDemoActive(Boolean(e.detail?.active));
+    };
+    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+    return () => window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoChange);
+  }, []);
+
+  const handleLoadDemo = () => {
+    const res = loadDemoProgress(user?.id);
+    setDemoActive(true);
+    showToast(`Loaded ${res.attemptsCount} demo question attempts for meet8kotecha.`, 'success');
+  };
+
+  const handleClearDemo = () => {
+    clearDemoProgress(user?.id);
+    setDemoActive(false);
+    showToast('Demo data cleared. Returned to genuine learner records.', 'info');
+  };
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteText, setDeleteText] = useState('');
@@ -69,6 +110,51 @@ export default function Settings() {
   const [syncState, setSyncState] = useState<SyncStatusState | null>(null);
   const [currentAiMode, setCurrentAiMode] = useState<AIMode>(() => aiTutorService.getMode());
   const [isSyncingNow, setIsSyncingNow] = useState(false);
+
+  // Voice Assistant preferences
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [testingVoice, setTestingVoice] = useState(false);
+
+  useEffect(() => {
+    const updateVoices = () => {
+      setAvailableVoices(speechSynthesisService.getVoices());
+    };
+    updateVoices();
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.onvoiceschanged = updateVoices;
+    }
+  }, []);
+
+  const updateVoiceSetting = <K extends keyof VoiceSettings>(key: K, value: VoiceSettings[K]) => {
+    const next = saveVoiceSettings({ [key]: value });
+    setVoiceSettings(next);
+    showToast('Voice preference saved.', 'success');
+  };
+
+  const handleTestSpeech = async () => {
+    if (testingVoice) {
+      speechSynthesisService.stop();
+      setTestingVoice(false);
+      return;
+    }
+    setTestingVoice(true);
+    try {
+      await speechSynthesisService.speak(
+        'Hello! This is Mate Voice Assistant. Spoken responses and local Gemma 4 tutoring are ready.',
+        {
+          language: voiceSettings.speechLanguage,
+          voiceURI: voiceSettings.selectedVoiceURI,
+          rate: voiceSettings.speechRate,
+          volume: voiceSettings.speechVolume,
+          onEnd: () => setTestingVoice(false),
+          onError: () => setTestingVoice(false),
+        }
+      );
+    } catch {
+      setTestingVoice(false);
+    }
+  };
 
   useEffect(() => {
     const saved = localStorage.getItem('mindmate_settings');
@@ -355,6 +441,164 @@ export default function Settings() {
             ))}
           </div>
         </Card>
+
+        {/* Mate Voice Assistant & Speech Settings */}
+        <Card className="overflow-hidden p-0 border border-border shadow-sm">
+          <div className="border-b border-border p-6 bg-gray-50/50">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                <div className="rounded-xl bg-primary/10 p-2.5 text-primary">
+                  <Mic className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-dark">Mate Voice Assistant & Speech</h3>
+                  <p className="text-sm text-muted">
+                    Configure speech-to-text recognition, spoken AI answers, rate, and audio preferences.
+                  </p>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant={testingVoice ? 'danger' : 'secondary'}
+                onClick={handleTestSpeech}
+                className="gap-1.5 text-xs h-8 px-3"
+              >
+                {testingVoice ? <Square className="h-3.5 w-3.5 fill-current" /> : <Play className="h-3.5 w-3.5" />}
+                <span>{testingVoice ? 'Stop Test' : 'Test Speech'}</span>
+              </Button>
+            </div>
+          </div>
+
+          <div className="divide-y divide-border p-6 pt-0">
+            {/* Auto Spoken Answers Toggle */}
+            <Toggle
+              checked={voiceSettings.autoSpeak}
+              onChange={() => updateVoiceSetting('autoSpeak', !voiceSettings.autoSpeak)}
+              label="Enable Spoken Responses"
+              desc="Read Mate AI answers aloud automatically using browser speech synthesis."
+            />
+
+            {/* Speech Recognition Language */}
+            <div className="py-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-dark text-sm">Speech-to-Text Language</p>
+                  <p className="text-xs text-muted">Initial language used for recognizing your voice input.</p>
+                </div>
+                <select
+                  value={voiceSettings.speechLanguage}
+                  onChange={(e) => updateVoiceSetting('speechLanguage', e.target.value)}
+                  className="rounded-lg border border-border bg-surface px-3 py-1.5 text-xs text-dark font-medium focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                >
+                  {SUPPORTED_SPEECH_LANGUAGES.map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {lang.label} ({lang.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* TTS Voice Selection */}
+            <div className="py-4 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div>
+                  <p className="font-medium text-dark text-sm">Speech Synthesis Voice</p>
+                  <p className="text-xs text-muted">Select from available voices detected on your operating system.</p>
+                </div>
+                <select
+                  value={voiceSettings.selectedVoiceURI || ''}
+                  onChange={(e) => updateVoiceSetting('selectedVoiceURI', e.target.value || undefined)}
+                  className="max-w-xs rounded-lg border border-border bg-surface px-3 py-1.5 text-xs text-dark font-medium focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 truncate"
+                >
+                  <option value="">Default System Voice</option>
+                  {availableVoices.map((voice) => (
+                    <option key={voice.voiceURI} value={voice.voiceURI}>
+                      {voice.name} ({voice.lang})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Speech Rate Slider */}
+            <div className="py-4 space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <div>
+                  <p className="font-medium text-dark">Speech Rate ({voiceSettings.speechRate}x)</p>
+                  <p className="text-xs text-muted">Adjust how quickly Mate speaks answers aloud.</p>
+                </div>
+                <span className="font-mono text-xs font-semibold text-primary bg-indigo-50 px-2 py-0.5 rounded">
+                  {voiceSettings.speechRate.toFixed(2)}x
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.75"
+                max="1.5"
+                step="0.05"
+                value={voiceSettings.speechRate}
+                onChange={(e) => updateVoiceSetting('speechRate', parseFloat(e.target.value))}
+                className="w-full accent-primary cursor-pointer"
+                aria-label="Speech rate slider"
+              />
+            </div>
+
+            {/* Volume Slider */}
+            <div className="py-4 space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <div>
+                  <p className="font-medium text-dark">Speech Volume ({Math.round(voiceSettings.speechVolume * 100)}%)</p>
+                  <p className="text-xs text-muted">Adjust speech output volume level.</p>
+                </div>
+                <span className="font-mono text-xs font-semibold text-primary bg-indigo-50 px-2 py-0.5 rounded">
+                  {Math.round(voiceSettings.speechVolume * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.1"
+                max="1.0"
+                step="0.05"
+                value={voiceSettings.speechVolume}
+                onChange={(e) => updateVoiceSetting('speechVolume', parseFloat(e.target.value))}
+                className="w-full accent-primary cursor-pointer"
+                aria-label="Speech volume slider"
+              />
+            </div>
+
+            {/* Privacy Explanation & Reset Consent */}
+            <div className="pt-4">
+              <div className="rounded-xl border border-border bg-slate-50 p-4 text-xs text-muted space-y-2">
+                <div className="flex items-center gap-2 font-semibold text-dark">
+                  <ShieldCheck className="h-4 w-4 text-primary" />
+                  <span>Voice Privacy & Transparency Notice</span>
+                </div>
+                <p>
+                  Speech recognition is processed natively using your browser's Web Speech API. MindMate does not claim speech-to-text is fully offline and never records or stores your microphone audio. Once converted to text, responses are generated by your selected AI model (including local Gemma 4 via Ollama).
+                </p>
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[11px] text-muted">
+                    Consent status:{' '}
+                    <strong>{voiceSettings.privacyAcknowledged ? 'Acknowledged' : 'Pending'}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVoicePrivacyAcknowledged(false);
+                      setVoiceSettings({ ...voiceSettings, privacyAcknowledged: false });
+                      showToast('Voice privacy notice will be shown on next use.', 'info');
+                    }}
+                    className="text-xs text-primary hover:underline font-semibold"
+                  >
+                    Reset Consent Notice
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Card>
+
         <Card className="overflow-hidden p-0 border border-border shadow-sm">
           <div className="border-b border-border p-6 bg-gray-50/50">
             <div className="flex items-center gap-3">
@@ -464,15 +708,15 @@ export default function Settings() {
                   onClick={() => handleAiModeChange('ollama')}
                   className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all ${
                     currentAiMode === 'ollama'
-                      ? 'border-violet-600 bg-violet-50/50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 ring-2 ring-violet-500/20'
-                      : 'border-border bg-surface text-muted hover:border-primary/40'
+                      ? 'border-[#4F46E5] bg-[#EEF2FF] text-[#1E1B4B] ring-2 ring-[#4F46E5]/20 shadow-xs'
+                      : 'border-[#E2E8F0] bg-surface text-muted hover:border-[#4F46E5]/50 hover:text-dark'
                   }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <Server className="h-4 w-4" />
-                    <span className="font-semibold text-sm">Ollama (Gemma 4)</span>
+                    <Server className="h-4 w-4 text-[#4F46E5]" />
+                    <span className="font-semibold text-sm text-dark">Ollama (Gemma 4)</span>
                   </div>
-                  <p className="text-xs opacity-80">Runs local Gemma 4 (`{DEFAULT_OLLAMA_MODEL}`) via Ollama at 127.0.0.1:11434 with zero cloud calls.</p>
+                  <p className="text-xs text-muted">Runs local Gemma 4 (`{DEFAULT_OLLAMA_MODEL}`) via Ollama at 127.0.0.1:11434 with zero cloud calls.</p>
                 </button>
 
                 <button
@@ -480,15 +724,15 @@ export default function Settings() {
                   onClick={() => handleAiModeChange('online')}
                   className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all ${
                     currentAiMode === 'online'
-                      ? 'border-indigo-600 bg-indigo-50/50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 ring-2 ring-indigo-500/20'
-                      : 'border-border bg-surface text-muted hover:border-primary/40'
+                      ? 'border-[#4F46E5] bg-[#EEF2FF] text-[#1E1B4B] ring-2 ring-[#4F46E5]/20 shadow-xs'
+                      : 'border-[#E2E8F0] bg-surface text-muted hover:border-[#4F46E5]/50 hover:text-dark'
                   }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <Cloud className="h-4 w-4" />
-                    <span className="font-semibold text-sm">Online (Cloud)</span>
+                    <Cloud className="h-4 w-4 text-[#4F46E5]" />
+                    <span className="font-semibold text-sm text-dark">Online (Cloud)</span>
                   </div>
-                  <p className="text-xs opacity-80">Streams directly from Google Gemini 3.5 Flash for high depth and speed.</p>
+                  <p className="text-xs text-muted">Streams directly from Google Gemini 3.5 Flash for high depth and speed.</p>
                 </button>
 
                 <button
@@ -496,15 +740,15 @@ export default function Settings() {
                   onClick={() => handleAiModeChange('offline')}
                   className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all ${
                     currentAiMode === 'offline'
-                      ? 'border-emerald-600 bg-emerald-50/50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 ring-2 ring-emerald-500/20'
-                      : 'border-border bg-surface text-muted hover:border-primary/40'
+                      ? 'border-[#4F46E5] bg-[#EEF2FF] text-[#1E1B4B] ring-2 ring-[#4F46E5]/20 shadow-xs'
+                      : 'border-[#E2E8F0] bg-surface text-muted hover:border-[#4F46E5]/50 hover:text-dark'
                   }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <HardDrive className="h-4 w-4" />
-                    <span className="font-semibold text-sm">Offline (Local WebGPU)</span>
+                    <HardDrive className="h-4 w-4 text-[#4F46E5]" />
+                    <span className="font-semibold text-sm text-dark">Offline (Local WebGPU)</span>
                   </div>
-                  <p className="text-xs opacity-80">Runs 100% locally on your device with zero network calls and full privacy.</p>
+                  <p className="text-xs text-muted">Runs 100% locally on your device with zero network calls and full privacy.</p>
                 </button>
 
                 <button
@@ -512,28 +756,28 @@ export default function Settings() {
                   onClick={() => handleAiModeChange('auto')}
                   className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all ${
                     currentAiMode === 'auto'
-                      ? 'border-primary bg-primary/5 text-primary ring-2 ring-primary/20'
-                      : 'border-border bg-surface text-muted hover:border-primary/40'
+                      ? 'border-[#4F46E5] bg-[#EEF2FF] text-[#1E1B4B] ring-2 ring-[#4F46E5]/20 shadow-xs'
+                      : 'border-[#E2E8F0] bg-surface text-muted hover:border-[#4F46E5]/50 hover:text-dark'
                   }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <RefreshCw className="h-4 w-4" />
-                    <span className="font-semibold text-sm">Auto Hybrid</span>
+                    <RefreshCw className="h-4 w-4 text-[#4F46E5]" />
+                    <span className="font-semibold text-sm text-dark">Auto Hybrid</span>
                   </div>
-                  <p className="text-xs opacity-80">Prefers Cloud, automatically falling back to Local AI (Ollama/WebGPU) if offline.</p>
+                  <p className="text-xs text-muted">Prefers Cloud, automatically falling back to Local AI (Ollama/WebGPU) if offline.</p>
                 </button>
               </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2 pt-2 border-t border-border/60">
-              <div className="rounded-xl border border-border p-4 bg-background">
+              <div className="rounded-xl border border-[#E2E8F0] p-4 bg-[#F8FAFC]">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs uppercase font-semibold text-muted">Hardware Engine</span>
                   <span
-                    className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                    className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
                       localWebLLMAdapter.isWebGPUSupported()
-                        ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
-                        : 'bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
+                        ? 'bg-[#ECFDF5] text-[#047857] border-[#A7F3D0]'
+                        : 'bg-[#FFFBEB] text-[#92400E] border-[#FDE68A]'
                     }`}
                   >
                     {localWebLLMAdapter.isWebGPUSupported() ? 'WebGPU Supported' : 'WebGPU Unavailable'}
@@ -645,6 +889,50 @@ export default function Settings() {
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Demo Dataset Card */}
+              <div className="rounded-xl border border-border p-4 bg-background sm:col-span-2">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-amber-500" />
+                    <p className="font-semibold text-dark text-sm">Demonstration Learner Progress</p>
+                  </div>
+                  {demoActive ? (
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200 border border-amber-200 dark:border-amber-800">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                      Active
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-semibold text-muted bg-gray-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">
+                      Inactive (Real Data)
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-muted mb-3">
+                  Toggle an isolated 14-day sample dataset (41 question attempts across 8 curriculum topics) to demonstrate MindMate's adaptive mastery calculations, recurring mistake detection, and evidence-backed recommendations for profile <strong>meet8kotecha</strong>. Real learning records are preserved untouched.
+                </p>
+                <div className="flex gap-2">
+                  {!demoActive ? (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleLoadDemo}
+                      className="gap-1.5 shadow-xs cursor-pointer"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" /> Load Demo Progress
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleClearDemo}
+                      className="gap-1.5 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800 hover:bg-amber-50 cursor-pointer"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" /> Clear Demo Data
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
